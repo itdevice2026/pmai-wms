@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  # Server-build CI. The Pages deploy is in pages.yml.
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: wms
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/wms
+      AUTH_SECRET: ci-only-secret-not-used-in-production-000000
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Apply schema
+        run: for f in db/0*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"; done
+
+      - name: Seed an admin
+        run: node scripts/create-admin.mjs "ci@example.com" "CI User" "ci-password"
+
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: npm run build
+
+      - name: Workflow and invariant tests
+        run: |
+          printf 'DATABASE_URL=%s\nAUTH_SECRET=%s\n' "$DATABASE_URL" "$AUTH_SECRET" > .env.local
+          node scripts/flow-test.mjs
+
+      - name: Route smoke test
+        run: |
+          npm start &
+          npx wait-on http://127.0.0.1:3000/healthz -t 60000
+          node scripts/smoke.mjs http://127.0.0.1:3000 ci@example.com

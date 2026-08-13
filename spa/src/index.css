@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-50: #fff5f2;
+  --color-brand-100: #ffe8e1;
+  --color-brand-200: #ffd0c2;
+  --color-brand-300: #ffae97;
+  --color-brand-400: #ff7f5c;
+  --color-brand-500: #f4532b;
+  --color-brand-600: #de3a12;
+  --color-brand-700: #b82c0e;
+  --color-brand-800: #942813;
+  --color-brand-900: #7a2614;
+}
+
+body { @apply bg-slate-50 text-slate-800 antialiased; }
+.tabnum { font-variant-numeric: tabular-nums; }
+.thin-scroll { scrollbar-width: thin; scrollbar-color: #cbd5e1 transparent; }

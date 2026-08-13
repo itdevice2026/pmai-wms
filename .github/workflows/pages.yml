@@ -1,0 +1,65 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: spa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: spa/package-lock.json
+
+      - run: npm ci
+      - run: npx tsc -b
+
+      - name: Build
+        env:
+          # Publishable key only. It grants nothing on its own: RLS gates every
+          # read and the browser has no write access to any table — all writes
+          # go through the rpc_* functions. See db/010-012.
+          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+          BASE_PATH: /${{ github.event.repository.name }}/
+        run: |
+          if [ -z "$VITE_SUPABASE_URL" ]; then
+            echo "::error::Repository variable SUPABASE_URL is not set."
+            echo "Set it under Settings -> Secrets and variables -> Actions -> Variables."
+            exit 1
+          fi
+          npm run build
+
+      - name: SPA fallback for deep links
+        run: cp dist/index.html dist/404.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: spa/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
