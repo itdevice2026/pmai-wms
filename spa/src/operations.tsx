@@ -1751,8 +1751,8 @@ export function FpsStation() {
 
       <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-sm font-medium text-violet-700">
-          <span className={`h-2.5 w-2.5 rounded-full ${busy ? "bg-amber-400" : "bg-violet-500"}`} />
-          {busy ? "Working…" : "Ready — scan a QR code"}
+          <span className={`h-2.5 w-2.5 animate-pulse rounded-full ${busy ? "bg-amber-400" : "bg-violet-500"}`} />
+          {busy ? "Working…" : <span><span className="animate-pulse font-semibold">Ready</span> — scan a QR code</span>}
         </div>
         <div className="flex items-center gap-5 text-sm text-slate-600">
           <span>Total: <strong>{num(log.length)}</strong></span>
