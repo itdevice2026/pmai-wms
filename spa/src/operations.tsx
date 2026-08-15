@@ -1193,3 +1193,86 @@ export function LiveBirdReceiving() {
     </>
   );
 }
+
+/* ======================================================== Byproducts */
+
+function ByproductPanel({ title, category, items, onChanged }: {
+  title: string; category: "primary" | "secondary";
+  items: Row[]; onChanged: () => void;
+}) {
+  const [newName, setNewName] = useState("");
+  const [names, setNames] = useState<Record<string, string>>({});
+  const [actives, setActives] = useState<Record<string, boolean>>({});
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  async function act(fn: string, args: Record<string, unknown>) {
+    const r = await rpc(fn, args);
+    setResult({ ok: Boolean(r.ok), message: String(r.message ?? "") });
+    if (r.ok) onChanged();
+  }
+
+  return (
+    <Card title={title} action={<span className="text-xs text-slate-400">{items.length} item(s)</span>}>
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-slate-400">Add byproduct</div>
+      <div className="mb-4 flex gap-2">
+        <input className={inputClass} value={newName} placeholder="e.g. Feet, Neck, Gizzard…"
+          onChange={(e) => setNewName(e.target.value)} />
+        <Button onClick={async () => {
+          await act("rpc_save_byproduct", { p_id: null, p_category: category, p_name: newName });
+          setNewName("");
+        }}>Add</Button>
+      </div>
+      <div className="divide-y divide-slate-100">
+        {items.map((b) => {
+          const id = String(b.id);
+          const name = names[id] ?? String(b.name);
+          const active = actives[id] ?? Boolean(b.is_active);
+          return (
+            <div key={id} className="flex items-center gap-3 py-2">
+              <input className={inputClass} value={name}
+                onChange={(e) => setNames((m) => ({ ...m, [id]: e.target.value }))} />
+              <label className="flex items-center gap-1 text-xs text-slate-600">
+                <input type="checkbox" checked={active}
+                  onChange={(e) => setActives((m) => ({ ...m, [id]: e.target.checked }))} />
+                Active
+              </label>
+              <button className="text-sm font-medium text-brand-700 hover:underline"
+                onClick={() => act("rpc_save_byproduct",
+                  { p_id: Number(b.id), p_category: category, p_name: name, p_active: active })}>
+                Save
+              </button>
+              <button className="text-sm font-medium text-rose-600 hover:underline"
+                onClick={() => act("rpc_delete_byproduct", { p_id: Number(b.id) })}>
+                Delete
+              </button>
+            </div>
+          );
+        })}
+        {items.length === 0 && <p className="py-4 text-sm text-slate-400">None yet.</p>}
+      </div>
+      <Result r={result} />
+    </Card>
+  );
+}
+
+export function Byproducts() {
+  const { data, error, loading, reload } = useLoad(async () =>
+    rows(sb().from("byproducts").select("id,category,name,is_active").order("name")), []);
+
+  if (loading) return <Spinner />;
+  if (error) return <ErrorBox message={error} />;
+  const items = data!;
+
+  return (
+    <>
+      <PageHeader title="Byproducts"
+        subtitle="Manage the Primary & Secondary byproduct SKUs used in Basic Dressing weighing. These fill the byproduct dropdowns at the weighing station." />
+      <div className="grid gap-5 lg:grid-cols-2">
+        <ByproductPanel title="Primary Byproduct" category="primary"
+          items={items.filter((b) => b.category === "primary")} onChanged={reload} />
+        <ByproductPanel title="Secondary Byproduct" category="secondary"
+          items={items.filter((b) => b.category === "secondary")} onChanged={reload} />
+      </div>
+    </>
+  );
+}
