@@ -1651,7 +1651,7 @@ export function FpsCustomers() {
   return (
     <>
       <div className="mb-5 flex items-center justify-between">
-        <a href="#/fps" className="rounded border border-slate-300 px-2.5 py-1 text-sm text-slate-600 hover:bg-slate-50">← FPS Entry</a>
+        <a href="#/fps/entry" className="rounded border border-slate-300 px-2.5 py-1 text-sm text-slate-600 hover:bg-slate-50">← FPS Entry</a>
         <h1 className="text-lg font-bold text-brand-700">FPS Customers & SKUs</h1>
       </div>
       <div className="grid gap-5 lg:grid-cols-[minmax(260px,340px)_1fr]">
