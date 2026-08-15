@@ -43,3 +43,7 @@ next-env.d.ts
 shots/
 *.zip
 out/
+
+# nested workspaces (spa/ has its own package.json)
+node_modules/
+spa/dist/
