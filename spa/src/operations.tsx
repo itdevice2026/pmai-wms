@@ -2185,3 +2185,159 @@ export function FpsReceiving() {
     </>
   );
 }
+
+/* ==================================================== FPS Receiving Station
+ * Scan an FPS label to receive it back from FPS into the warehouse and —
+ * when a pallet is selected — pack it onto that FPS pallet in one step.
+ */
+export function FpsReceivingStation() {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [palletId, setPalletId] = useState("");
+  const [lastKey, setLastKey] = useState("—");
+  const [lastCode, setLastCode] = useState("—");
+  const [lastAction, setLastAction] = useState("—");
+  const [log, setLog] = useState<Array<Row & { at: number }>>([]);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const { data: pallets, reload: reloadPallets } = useLoad(async () =>
+    rows(sb().from("pallets").select("id,pallet_no,crate_count")
+      .eq("kind", "fps").eq("status", "open")
+      .order("id", { ascending: false }).limit(25)), []);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (document.activeElement?.tagName !== "INPUT") inputRef.current?.focus();
+    }, 1200);
+    return () => clearInterval(t);
+  }, []);
+
+  async function scan(e: React.FormEvent) {
+    e.preventDefault();
+    const value = code.trim();
+    if (!value) return;
+    setBusy(true);
+    const res = await rpc("rpc_fps_receive", {
+      p_code: value, p_pallet_id: palletId ? Number(palletId) : null,
+    });
+    setBusy(false);
+    setLastCode(value);
+    setLastAction(String(res.action ?? (res.ok ? "received" : "skipped")));
+    setLog((prev) => [{ ...(res as Row), at: Date.now() }, ...prev].slice(0, 300));
+    setCode("");
+    if (res.ok && palletId) void reloadPallets();
+    inputRef.current?.focus();
+  }
+
+  async function newPallet() {
+    const r = await rpc("rpc_open_pallet", { p_kind: "fps" });
+    if (r.ok) {
+      await reloadPallets();
+      const id = Number((r as Row).palletId ?? 0);
+      if (id) setPalletId(String(id));
+    }
+    setLog((prev) => [{ ...(r as Row), at: Date.now() }, ...prev].slice(0, 300));
+  }
+
+  const received = log.filter((l) => Boolean(l.ok)).length;
+  const skipped = log.length - received;
+
+  return (
+    <>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <a href="#/dashboard" className="text-sm text-slate-500 hover:text-slate-800">← Warehouse</a>
+          <span className="text-slate-300">|</span>
+          <h1 className="text-lg font-bold text-slate-900">FPS Receiving Station</h1>
+          <span className="rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 text-[10px] font-semibold tracking-wider text-emerald-700">SCAN FPS LABEL</span>
+        </div>
+        <a href="#/wh/fps-receiving" className="text-sm text-slate-500 hover:text-slate-800">FPS Received Log →</a>
+      </div>
+
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-emerald-700">
+          <span className={`h-2.5 w-2.5 animate-pulse rounded-full ${busy ? "bg-amber-400" : "bg-emerald-500"}`} />
+          {busy ? "Working…" : <span><span className="animate-pulse font-semibold">Ready</span> — scan an FPS label</span>}
+        </div>
+        <div className="flex items-center gap-5 text-sm text-slate-600">
+          <span>Total: <strong>{num(log.length)}</strong></span>
+          <span>Received: <strong className="text-emerald-700">{num(received)}</strong></span>
+          <span>Skipped: <strong className="text-amber-600">{num(skipped)}</strong></span>
+          <button type="button" onClick={() => setLog([])}
+            className="rounded-full border border-slate-300 px-3 py-1 text-xs text-slate-500 hover:bg-slate-50">
+            Clear Log
+          </button>
+        </div>
+      </div>
+
+      <div className="mb-2 flex flex-wrap items-center gap-3 text-sm">
+        <span className="flex items-center gap-1.5 text-slate-600">🏷 Add to pallet:</span>
+        <select className={`${inputClass} !w-64`} value={palletId} onChange={(e) => setPalletId(e.target.value)}>
+          <option value="">— No pallet (just receive) —</option>
+          {(pallets ?? []).map((p) => (
+            <option key={String(p.id)} value={String(p.id)}>
+              Pallet {String(p.pallet_no).replace(/^PLT-?/, "")} ({num(Number(p.crate_count ?? 0))})
+            </option>
+          ))}
+        </select>
+        <button type="button" onClick={() => void newPallet()}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">
+          + New pallet
+        </button>
+        <a href="#/fps/pallets" className="text-sm font-medium text-emerald-700 hover:underline">Manage FPS pallets →</a>
+        <span className="text-xs text-slate-400">
+          {palletId
+            ? "Each received label is packed onto the selected pallet."
+            : "Crates will be received only — not packed onto a pallet."}
+        </span>
+      </div>
+
+      <div className="-mx-5 mb-4 flex flex-wrap gap-8 bg-slate-100 px-5 py-1.5 font-mono text-xs text-slate-600 lg:-mx-8 lg:px-8">
+        <span>last key:&nbsp;&nbsp;{lastKey}</span>
+        <span>raw:&nbsp;&nbsp;{code || "—"}</span>
+        <span>code:&nbsp;&nbsp;{lastCode}</span>
+        <span>last action:&nbsp;&nbsp;{lastAction}</span>
+      </div>
+
+      <form onSubmit={scan}>
+        <input ref={inputRef} value={code} autoFocus
+          placeholder="Ready — scan an FPS label (FPS-…)"
+          onChange={(e) => setCode(e.target.value)}
+          onKeyDown={(e) => setLastKey(e.key === "Enter" ? "Enter" : e.key)}
+          className="w-full rounded-xl border-0 px-5 py-4 font-mono text-base ring-2 ring-inset ring-emerald-400 placeholder:text-slate-400 focus:ring-emerald-500" />
+      </form>
+
+      {log.length === 0 ? (
+        <div className="mt-24 text-center">
+          <div className="mx-auto mb-3 grid h-12 w-12 grid-cols-2 gap-1 opacity-30">
+            <span className="rounded border-2 border-slate-500" /><span className="rounded border-2 border-slate-500" />
+            <span className="rounded border-2 border-slate-500" /><span />
+          </div>
+          <p className="text-lg font-semibold text-slate-500">Ready to scan</p>
+          <p className="mt-1 text-sm text-slate-400">
+            Scan an <b className="text-rose-700">FPS label</b> to receive it back from FPS into the warehouse
+          </p>
+        </div>
+      ) : (
+        <div className="thin-scroll mt-5 max-h-[480px] overflow-y-auto rounded-xl border border-slate-200 bg-white">
+          <ul className="divide-y divide-slate-100">
+            {log.map((l, i2) => (
+              <li key={i2} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-sm">
+                    <span className={l.ok ? "text-emerald-600" : "text-amber-600"}>{l.ok ? "✓" : "✕"}</span>
+                    <span className="truncate text-slate-700">{String(l.message ?? "")}</span>
+                  </div>
+                  {Boolean(l.crateNo) && <div className="truncate font-mono text-[11px] text-slate-400">{String(l.crateNo)}{l.sku ? ` · ${String(l.sku)}` : ""}</div>}
+                </div>
+                <span className="shrink-0 text-xs tabnum text-slate-400">
+                  {l.weightKg ? `${kg(Number(l.weightKg))} kg` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
+  );
+}
