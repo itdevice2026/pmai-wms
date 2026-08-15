@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sb, rpc, type RpcResult } from "./supabase";
+import QRCode from "qrcode";
 import { useSession } from "./session";
 import {
   Card, StatCard, Badge, Field, Button, Spinner, ErrorBox,
@@ -242,9 +243,13 @@ export function WeighingEntry() {
   const outOfBand = perHead > 0 && lo > 0 && hi > 0 && (perHead < lo || perHead > hi);
 
   /** Browser-print labels. Sizes follow the live dropdown (inches). */
-  function printLabels(list: Array<{ crate_no: string; sku: string; net_weight_kg: string; heads: number | null }>) {
+  async function printLabels(list: Array<{ crate_no: string; sku: string; net_weight_kg: string; heads: number | null }>) {
     if (!list.length) return;
     const [w, h] = labelSize.split("x").map(Number);
+    // Every weighing generates a QR code — the label carries it so the scan
+    // stations can read the crate straight off the printout.
+    const qrs = await Promise.all(list.map((r) =>
+      QRCode.toDataURL(r.crate_no, { margin: 0, width: 220 }).catch(() => "")));
     const win = window.open("", "_blank", "width=480,height=640");
     if (!win) return;
     win.document.write(`<!doctype html><html><head><title>Labels</title><style>
@@ -253,14 +258,21 @@ export function WeighingEntry() {
       .label { width: ${w}in; height: ${h}in; padding: 0.15in; box-sizing: border-box;
                display: flex; flex-direction: column; justify-content: ${fillSpace ? "space-between" : "flex-start"};
                page-break-after: always; }
+      .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.1in; }
+      .qr { width: ${Math.min(w, h) * 0.42}in; height: ${Math.min(w, h) * 0.42}in; }
       .crate { font-size: ${w >= 4 ? "20pt" : "14pt"}; font-weight: 700; letter-spacing: 0.5px; }
       .row { font-size: ${w >= 4 ? "16pt" : "11pt"}; margin-top: 0.06in; }
       .big { font-size: ${w >= 4 ? "28pt" : "18pt"}; font-weight: 700; }
     </style></head><body>` +
-      list.map((r) => `<div class="label">
-        <div class="crate">${r.crate_no}</div>
-        <div class="row">SKU <b>${r.sku}</b> · Heads <b>${r.heads ?? ""}</b></div>
-        <div class="big">${Number(r.net_weight_kg).toFixed(2)} kg</div>
+      list.map((r, i) => `<div class="label">
+        <div class="top">
+          <div>
+            <div class="crate">${r.crate_no}</div>
+            <div class="row">SKU <b>${r.sku}</b> · Heads <b>${r.heads ?? ""}</b></div>
+            <div class="big">${Number(r.net_weight_kg).toFixed(2)} kg</div>
+          </div>
+          ${qrs[i] ? `<img class="qr" src="${qrs[i]}" alt="QR ${r.crate_no}" />` : ""}
+        </div>
         <div class="row">${new Date().toLocaleString("en-PH")}</div>
       </div>`).join("") + "</body></html>");
     win.document.close();
@@ -283,7 +295,7 @@ export function WeighingEntry() {
     setMsg({ ok: res.ok, text: res.ok ? `Saved ${res.crateNo} · ${kg(res.netKg as number)} kg` : res.message });
     if (res.ok) {
       if (autoPrint && res.crateNo) {
-        printLabels([{ crate_no: String(res.crateNo), sku: selectedProduct?.band_code ?? "",
+        void printLabels([{ crate_no: String(res.crateNo), sku: selectedProduct?.band_code ?? "",
           net_weight_kg: String(res.netKg ?? net), heads: headCount }]);
       }
       setWeight(""); weightRef.current?.focus(); void loadRecords();
@@ -456,7 +468,7 @@ export function WeighingEntry() {
               {skus.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
             <button type="button" disabled={shown.length === 0}
-              onClick={() => printLabels(shown)}
+              onClick={() => void printLabels(shown)}
               className="rounded-lg bg-emerald-100 px-3 py-2 text-sm font-medium text-emerald-800 hover:bg-emerald-200 disabled:opacity-50">
               🖨 Print All
             </button>
