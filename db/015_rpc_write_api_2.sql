@@ -337,11 +337,17 @@ BEGIN
 
   UPDATE crates SET pallet_id = p_pallet_id WHERE id = v_crate.id;
 
-  -- Roll both pallets up so counts and weights stay truthful.
+  -- Roll both pallets up so counts and weights stay truthful. (Zero first:
+  -- a FROM-subquery cannot reference the UPDATE target, and an emptied
+  -- pallet has no group row.)
+  UPDATE pallets SET crate_count = 0, total_weight_kg = 0
+   WHERE id IN (v_from, p_pallet_id);
   UPDATE pallets p SET crate_count = s.cnt, total_weight_kg = s.wt
-    FROM (SELECT count(*) cnt, COALESCE(sum(net_weight_kg),0) wt
-            FROM crates WHERE pallet_id = p.id AND NOT is_voided) s
-   WHERE p.id IN (v_from, p_pallet_id) AND p.id IS NOT NULL;
+    FROM (SELECT pallet_id, count(*) cnt, COALESCE(sum(net_weight_kg),0) wt
+            FROM crates
+           WHERE pallet_id IN (v_from, p_pallet_id) AND NOT is_voided
+           GROUP BY pallet_id) s
+   WHERE p.id = s.pallet_id;
 
   PERFORM rpc_log(u.id, 'Warehouse', 'transfer', 'crates', v_crate.id::text,
     format('Moved crate %s from pallet %s to %s',
@@ -372,10 +378,14 @@ BEGIN
    WHERE pallet_id = ANY(p_source_ids) AND NOT is_voided;
   GET DIAGNOSTICS v_moved = ROW_COUNT;
 
+  UPDATE pallets SET crate_count = 0, total_weight_kg = 0
+   WHERE id = p_target_id OR id = ANY(p_source_ids);
   UPDATE pallets p SET crate_count = s.cnt, total_weight_kg = s.wt
-    FROM (SELECT count(*) cnt, COALESCE(sum(net_weight_kg),0) wt
-            FROM crates WHERE pallet_id = p.id AND NOT is_voided) s
-   WHERE p.id = p_target_id OR p.id = ANY(p_source_ids);
+    FROM (SELECT pallet_id, count(*) cnt, COALESCE(sum(net_weight_kg),0) wt
+            FROM crates
+           WHERE (pallet_id = p_target_id OR pallet_id = ANY(p_source_ids)) AND NOT is_voided
+           GROUP BY pallet_id) s
+   WHERE p.id = s.pallet_id;
 
   UPDATE pallets SET status = 'merged' WHERE id = ANY(p_source_ids);
 
