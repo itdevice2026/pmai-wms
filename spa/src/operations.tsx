@@ -2025,3 +2025,163 @@ export function FpsPallets() {
     </>
   );
 }
+
+/* ========================================================== FPS Receiving
+ * "FPS Production Output" — every FPS sticker (label) generated, how many
+ * were scanned in at the receiving station, filterable by production date,
+ * with Excel export and an inline per-SKU summary. Mirrors live PMAI.
+ */
+export function FpsReceiving() {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [applied, setApplied] = useState<{ from: string; to: string }>({ from: "", to: "" });
+  const [tab, setTab] = useState<"all" | "scanned" | "unscanned">("all");
+  const [showSummary, setShowSummary] = useState(false);
+
+  const { data, error, loading } = useLoad(async () => {
+    let qy = sb().from("crates")
+      .select("crate_no,fps_band,fps_class,net_weight_kg,heads,production_date,fps_received_at,pallet_id,customers!crates_fps_customer_id_fkey(name),users!crates_fps_received_by_fkey(full_name),crate_types(name),pallets!crates_pallet_id_fkey(pallet_no)")
+      .not("fps_customer_id", "is", null).eq("is_voided", false)
+      .order("fps_received_at", { ascending: false, nullsFirst: false })
+      .limit(2000);
+    if (applied.from) qy = qy.gte("production_date", applied.from);
+    if (applied.to) qy = qy.lte("production_date", applied.to);
+    return rows(qy);
+  }, [applied]);
+
+  if (loading) return <Spinner />;
+  if (error) return <ErrorBox message={error} />;
+  const all = data!;
+  const scanned = all.filter((r) => r.fps_received_at);
+  const unscanned = all.filter((r) => !r.fps_received_at);
+  const sum = (list: Row[], k: string) => list.reduce((s, r) => s + Number(r[k] ?? 0), 0);
+  const rate = all.length ? (scanned.length / all.length) * 100 : 0;
+  const shown = tab === "all" ? all : tab === "scanned" ? scanned : unscanned;
+  const tabTitle = tab === "all" ? "All Stickers" : tab === "scanned" ? "Scanned Stickers" : "Unscanned Stickers";
+
+  const bySku = [...shown.reduce((m, r) => {
+    const k = String(r.fps_band ?? "—");
+    const cur = m.get(k) ?? { n: 0, kg: 0, heads: 0 };
+    m.set(k, { n: cur.n + 1, kg: cur.kg + Number(r.net_weight_kg ?? 0), heads: cur.heads + Number(r.heads ?? 0) });
+    return m;
+  }, new Map<string, { n: number; kg: number; heads: number }>()).entries()].sort((a, b) => b[1].n - a[1].n);
+
+  function exportExcel() {
+    const wsRows = shown.map((r, i) => ({
+      "#": shown.length - i,
+      "Batch Code": String(r.crate_no),
+      SKU: String(r.fps_band ?? ""),
+      Class: String(r.fps_class ?? ""),
+      Customer: String((r.customers as Row | null)?.name ?? ""),
+      "Weight (kg)": Number(r.net_weight_kg ?? 0),
+      Heads: Number(r.heads ?? 0),
+      "Prod. Date": String(r.production_date ?? ""),
+      "Scan Status": r.fps_received_at ? "Scanned" : "Unscanned",
+      "Received At": r.fps_received_at ? dateTimeStr(r.fps_received_at) : "",
+      "Received By": String((r.users as Row | null)?.full_name ?? ""),
+      Pallet: String((r.pallets as Row | null)?.pallet_no ?? ""),
+    }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(wsRows), "FPS Output");
+    XLSX.writeFile(wb, `fps-output-${tab}.xlsx`);
+  }
+
+  const statCard = (label: string, value: string, sub: string, border: string, valueColor = "text-slate-900") => (
+    <div className={`rounded-xl border-2 ${border} bg-white p-4`}>
+      <div className="text-xs text-slate-500">{label}</div>
+      <div className={`mt-0.5 text-2xl font-bold ${valueColor}`}>{value}</div>
+      <div className="mt-0.5 text-[11px] text-slate-400">{sub}</div>
+    </div>
+  );
+
+  return (
+    <>
+      <div className="mb-5 rounded-xl bg-gradient-to-r from-slate-900 to-slate-800 px-6 py-5 text-white">
+        <div className="text-[10px] font-semibold uppercase tracking-widest text-emerald-400">FPS Production Output</div>
+        <h1 className="mt-1 text-2xl font-bold">{num(all.length)} Stickers Generated</h1>
+        <p className="mt-0.5 text-xs text-emerald-200/70">{num(scanned.length)} scanned in · {num(unscanned.length)} not yet scanned</p>
+      </div>
+
+      <Card className="mb-5 !p-0"><div className="flex flex-wrap items-end gap-3 p-4">
+        <Field label="Production Date — From">
+          <input type="date" className={inputClass} value={from} onChange={(e) => setFrom(e.target.value)} />
+        </Field>
+        <Field label="Production Date — To">
+          <input type="date" className={inputClass} value={to} onChange={(e) => setTo(e.target.value)} />
+        </Field>
+        <Button onClick={() => setApplied({ from, to })}>Apply</Button>
+        <button onClick={() => { setFrom(""); setTo(""); setApplied({ from: "", to: "" }); }}
+          className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50">Show All Dates</button>
+      </div></Card>
+
+      <div className="mb-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {statCard("Generated Stickers", num(all.length), `${num(sum(all, "heads"))} heads · ${kg(sum(all, "net_weight_kg"))} kg`, "border-blue-500")}
+        {statCard("Scanned In", num(scanned.length), `${num(sum(scanned, "heads"))} heads · ${kg(sum(scanned, "net_weight_kg"))} kg`, "border-emerald-600", "text-emerald-700")}
+        {statCard("Unscanned", num(unscanned.length), `${num(sum(unscanned, "heads"))} heads · ${kg(sum(unscanned, "net_weight_kg"))} kg`, "border-amber-400", "text-amber-500")}
+        {statCard("Scan Rate", `${rate.toFixed(1)}%`, "of generated stickers scanned in", "border-slate-300")}
+      </div>
+
+      <div className="mb-4 flex gap-1.5">
+        {([["all", `All (${num(all.length)})`], ["scanned", `Scanned (${num(scanned.length)})`], ["unscanned", `Unscanned (${num(unscanned.length)})`]] as const).map(([k, label]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={`rounded-md border px-3 py-1 text-xs font-medium ${
+              tab === k ? "border-slate-900 bg-slate-900 text-white"
+              : k === "unscanned" ? "border-amber-300 text-amber-600 hover:bg-amber-50"
+              : "border-blue-300 text-blue-600 hover:bg-blue-50"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <Card>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="text-sm font-bold text-slate-800">📋 {tabTitle} <span className="font-normal text-slate-400">({num(shown.length)})</span></div>
+          <div className="flex flex-wrap gap-1.5">
+            <button onClick={exportExcel}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50">⬇ Export to Excel</button>
+            <button onClick={() => setShowSummary((v) => !v)}
+              className="rounded-lg border border-emerald-600 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50">📊 Summary</button>
+            <a href="#/wh/fps-receiving-station"
+              className="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800">→ FPS Receiving Station</a>
+          </div>
+        </div>
+
+        {showSummary && (
+          <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50/60 p-3">
+            <div className="mb-1.5 text-xs font-semibold text-emerald-800">Summary by SKU ({tabTitle})</div>
+            <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-700">
+              {bySku.map(([k, v]) => (
+                <span key={k}><b className="text-rose-700">{k}</b> — {num(v.n)} stickers · {num(v.heads)} heads · {kg(v.kg)} kg</span>
+              ))}
+              {bySku.length === 0 && <span className="text-slate-400">Nothing to summarize.</span>}
+            </div>
+          </div>
+        )}
+
+        <DataTable rows={shown.slice(0, 200)} empty="No stickers in this view." headerWhenEmpty
+          rowKey={(r) => String(r.crate_no)}
+          columns={[
+            { key: "_n", header: "#", render: (r) => <span className="tabnum text-slate-500">{num(shown.length - shown.indexOf(r))}</span> },
+            { key: "crate_no", header: "Batch Code", render: (r) => <span className="rounded-full bg-emerald-900 px-2.5 py-1 font-mono text-[10px] font-semibold text-emerald-50">{String(r.crate_no)}</span> },
+            { key: "fps_band", header: "SKU", render: (r) => <b>{String(r.fps_band ?? "—")}</b> },
+            { key: "fps_class", header: "Class" },
+            { key: "cust", header: "Customer", render: (r) => String((r.customers as Row | null)?.name ?? "—") },
+            { key: "net_weight_kg", header: "Weight (kg)", render: (r) => `${Number(r.net_weight_kg).toFixed(3)} kg` },
+            { key: "heads", header: "Heads", render: (r) => `${num(Number(r.heads ?? 0))} (${String((r.crate_types as Row | null)?.name ?? "").split(" ")[0] || "—"})` },
+            { key: "production_date", header: "Prod. Date", render: (r) => dateStr(r.production_date) },
+            { key: "st", header: "Scan Status", render: (r) => r.fps_received_at
+                ? <span className="rounded-full bg-emerald-600 px-2 py-0.5 text-[10px] font-semibold text-white">Scanned</span>
+                : <span className="rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-semibold text-amber-900">Unscanned</span> },
+            { key: "fps_received_at", header: "Received At", render: (r) => r.fps_received_at ? dateTimeStr(r.fps_received_at) : "—" },
+            { key: "rb", header: "Received By", render: (r) => String((r.users as Row | null)?.full_name ?? "—").toUpperCase() },
+            { key: "pallet", header: "Pallet", render: (r) => {
+                const pn = String((r.pallets as Row | null)?.pallet_no ?? "");
+                return pn ? <span className="rounded bg-slate-900 px-2 py-0.5 font-mono text-[10px] font-bold text-white">{pn.replace(/^PLT-?/, "")}</span> : "—";
+              } },
+            { key: "tag", header: "Tag", render: () => "—" },
+          ] as Column<Row>[]} />
+        {shown.length > 200 && <p className="mt-2 text-center text-xs text-slate-400">Showing latest 200 of {num(shown.length)} — narrow with the date filter or export to Excel for the full list.</p>}
+      </Card>
+    </>
+  );
+}
