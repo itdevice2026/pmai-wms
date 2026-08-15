@@ -12,6 +12,10 @@ import {
   StorageRoomsReport, ProductionSummaryReport, IssuanceSummaryReport,
   DispatchSummaryReport, CrateAuditReport, UnscannedCratesReport, JobOrdersReport,
 } from "./reports";
+import {
+  Picklist, Issuance, Dispatch, PalletCreation, LocationTransfer,
+  PalletTransfer, PalletDisposition, LockedRecords, Rbac,
+} from "./operations";
 
 /**
  * HashRouter is deliberate: GitHub Pages serves static files and has no
@@ -41,6 +45,17 @@ const SCREENS: Record<string, React.ComponentType> = {
   "/reports/crate-audit": CrateAuditReport,
   "/reports/unscanned-crates": UnscannedCratesReport,
   "/reports/job-orders": JobOrdersReport,
+
+  // Interactive screens — every write goes through an rpc_* function (db/015).
+  "/wh/picklist": Picklist,
+  "/wh/issuance": Issuance,
+  "/wh/dispatch": Dispatch,
+  "/wh/pallet-creation": PalletCreation,
+  "/wh/location-transfer": LocationTransfer,
+  "/wh/pallet-transfer": PalletTransfer,
+  "/planning/pallet-disposition": PalletDisposition,
+  "/system/locked-records": LockedRecords,
+  "/system/rbac": Rbac,
 };
 
 function Login() {
