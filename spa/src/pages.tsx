@@ -31,112 +31,139 @@ function useLoad<T>(fn: () => Promise<T>, deps: unknown[] = []) {
 /* ------------------------------------------------------------------ Dashboard */
 
 export function Dashboard() {
-  const { profile } = useSession();
+  const today = new Date().toISOString().slice(0, 10);
+  const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
 
   const { data, error, loading } = useLoad(async () => {
-    const [statusRes, todayRes, movesRes, roomsRes] = await Promise.all([
-      sb().from("crates").select("status, net_weight_kg").eq("is_voided", false),
-      sb().from("crates").select("heads, net_weight_kg")
-        .eq("production_date", new Date().toISOString().slice(0, 10)).eq("is_voided", false),
-      sb().from("crate_movements")
-        .select("from_status, to_status, occurred_at, crates(crate_no)")
-        .order("occurred_at", { ascending: false }).limit(10),
-      sb().from("storage_rooms").select("id, name, capacity_pallets, is_available").eq("is_active", true),
+    const [weigh, fps, crates, pallets, received] = await Promise.all([
+      sb().from("weighing_records").select("net_weight_kg, heads")
+        .gte("weighed_at", dayStart.toISOString()).eq("is_deleted", false).limit(2000),
+      sb().from("fps_outputs").select("weight_kg").gte("produced_at", dayStart.toISOString()).limit(2000),
+      sb().from("crates").select("status").in("status", ["warehouse", "storage", "cutting"])
+        .eq("is_voided", false).limit(5000),
+      sb().from("pallets").select("id, built_at").in("status", ["open", "stored", "closed"]).limit(2000),
+      sb().from("crates")
+        .select("crate_no, batch_no, status, updated_at, products(sku), locations(code)")
+        .eq("status", "warehouse").eq("is_voided", false)
+        .order("updated_at", { ascending: false }).limit(15),
     ]);
-    if (statusRes.error) throw new Error(statusRes.error.message);
-
-    const byStatus = new Map<string, { n: number; wt: number }>();
-    for (const c of statusRes.data ?? []) {
-      const cur = byStatus.get(c.status) ?? { n: 0, wt: 0 };
-      cur.n += 1; cur.wt += Number(c.net_weight_kg ?? 0);
-      byStatus.set(c.status, cur);
-    }
-    const today = (todayRes.data ?? []).reduce(
-      (a, c) => ({ n: a.n + 1, heads: a.heads + Number(c.heads ?? 0), wt: a.wt + Number(c.net_weight_kg ?? 0) }),
-      { n: 0, heads: 0, wt: 0 }
-    );
-    return { byStatus, today, moves: movesRes.data ?? [], rooms: roomsRes.data ?? [] };
+    return {
+      weigh: weigh.data ?? [], fps: fps.data ?? [], crates: crates.data ?? [],
+      pallets: pallets.data ?? [], received: received.data ?? [],
+    };
   }, []);
 
   if (loading) return <Spinner />;
   if (error) return <ErrorBox message={error} />;
-  if (!data) return null;
+  const d = data!;
 
-  const order = ["production","warehouse","storage","cutting","issued_to_fps","fps_processed","wh_received_cut","picked","dispatched"];
-  const onHand = ["warehouse","storage","wh_received_cut","fps_processed"]
-    .reduce((s, k) => s + (data.byStatus.get(k)?.wt ?? 0), 0);
+  const wEntries = d.weigh.length;
+  const wKg = d.weigh.reduce((a, r) => a + Number((r as Record<string, unknown>).net_weight_kg ?? 0), 0);
+  const wHeads = d.weigh.reduce((a, r) => a + Number((r as Record<string, unknown>).heads ?? 0), 0);
+  const fEntries = d.fps.length;
+  const fKg = d.fps.reduce((a, r) => a + Number((r as Record<string, unknown>).weight_kg ?? 0), 0);
+  const byStatus = (s: string) => d.crates.filter((c) => (c as Record<string, unknown>).status === s).length;
+  const ageDays = (r: Record<string, unknown>) =>
+    Math.floor((Date.now() - new Date(String(r.built_at)).getTime()) / 86_400_000);
+  const day4 = d.pallets.filter((p) => ageDays(p as Record<string, unknown>) >= 4).length;
+  const day3 = d.pallets.filter((p) => ageDays(p as Record<string, unknown>) >= 3).length;
+  const dateStrLong = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 
   return (
     <>
-      <PageHeader
-        title={`Welcome back, ${profile?.fullName?.split(" ")[0] ?? ""}`}
-        subtitle={`${dateStr(new Date())} · ${profile?.roleName ?? ""}`}
-      />
-
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-400">Today</h2>
-      <div className="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Crates Produced" value={num(data.today.n)} tone="brand" />
-        <StatCard label="Heads Processed" value={num(data.today.heads)} />
-        <StatCard label="Production Weight" value={`${kg(data.today.wt)} kg`} tone="blue" />
-        <StatCard label="Stock on Hand" value={`${kg(onHand)} kg`} tone="green" />
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-2xl font-semibold text-slate-900">Warehouse Dashboard</h1>
+        <span className="text-sm text-slate-500">{dateStrLong}</span>
       </div>
 
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-widest text-slate-400">Crate Status Breakdown</h2>
-      <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-        {order.map((s) => (
-          <StatCard key={s} label={CRATE_STATUS_LABEL[s]} value={num(data.byStatus.get(s)?.n ?? 0)}
-            hint={`${kg(data.byStatus.get(s)?.wt ?? 0)} kg`} tone={CRATE_STATUS_TONE[s] ?? "slate"} />
+      {day4 > 0 && (
+        <a href="#/reports/pallets"
+          className="mb-2 block rounded-lg border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-900 hover:bg-amber-100">
+          ⏳ {num(day4)} pallet(s) have been in storage <b>4 days</b> — decide: <b>Lock</b> (hold for sale) or <b>Send to FPS</b>.
+        </a>
+      )}
+      {day3 > 0 && (
+        <a href="#/reports/pallets"
+          className="mb-4 block rounded-lg border border-rose-300 bg-rose-50 px-4 py-2.5 text-sm text-rose-800 hover:bg-rose-100">
+          🔔 {num(day3)} pallet(s) have been in storage <b>3+ days</b> (by production date) — tap to review.
+        </a>
+      )}
+
+      <div className="mb-5 rounded-2xl bg-slate-900 px-6 py-5 text-white shadow">
+        <div className="text-[11px] font-semibold uppercase tracking-widest text-slate-400">
+          Today's Transactions · {dateStrLong}
+        </div>
+        <div className="mt-1.5 flex items-baseline gap-2">
+          <span className="text-4xl font-bold tabnum">{kg(wKg + fKg)}</span>
+          <span className="text-slate-300">kg total output</span>
+        </div>
+        <div className="mt-1 text-xs text-slate-400">{num(wEntries + fEntries)} entries · {num(wHeads)} heads</div>
+      </div>
+
+      <div className="mb-6 grid gap-4 lg:grid-cols-2">
+        {[
+          { icon: "⚖️", tone: "bg-indigo-600", title: "Weighing Entry Output", entries: wEntries, wt: wKg, heads: wHeads, accent: "border-indigo-500 text-indigo-700" },
+          { icon: "🏭", tone: "bg-purple-600", title: "Total FPS Output", entries: fEntries, wt: fKg, heads: 0, accent: "border-purple-500 text-purple-700" },
+        ].map((c) => (
+          <div key={c.title} className={`rounded-xl border-l-4 ${c.accent.split(" ")[0]} border border-slate-200 bg-white p-5 shadow-sm`}>
+            <div className="flex items-center gap-3">
+              <span className={`flex h-10 w-10 items-center justify-center rounded-lg ${c.tone} text-lg`}>{c.icon}</span>
+              <div>
+                <div className={`text-sm font-semibold ${c.accent.split(" ")[1]}`}>{c.title}</div>
+                <div className="text-xs text-slate-400">{num(c.entries)} entries today</div>
+              </div>
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-4">
+              <div>
+                <div className="text-xs text-slate-400">Total Weight</div>
+                <div className="text-2xl font-bold tabnum text-slate-900">{kg(c.wt)} <span className="text-sm font-normal text-slate-400">kg</span></div>
+              </div>
+              <div>
+                <div className="text-xs text-slate-400">Total Heads</div>
+                <div className="text-2xl font-bold tabnum text-slate-900">{num(c.heads)}</div>
+              </div>
+            </div>
+          </div>
         ))}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Recent Crate Activity" padded={false}>
-          {data.moves.length === 0 ? (
-            <p className="px-5 py-10 text-center text-sm text-slate-400">No crate movements yet.</p>
-          ) : (
-            <ul className="divide-y divide-slate-100">
-              {data.moves.map((m, i) => (
-                <li key={i} className="flex items-center justify-between gap-4 px-5 py-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5 text-sm">
-                      <span className="text-slate-500">{m.from_status ? CRATE_STATUS_LABEL[m.from_status] : "New"}</span>
-                      <span className="text-slate-300">→</span>
-                      <span className="font-medium text-slate-800">{m.to_status ? CRATE_STATUS_LABEL[m.to_status] : "—"}</span>
-                    </div>
-                    <div className="mt-0.5 truncate text-xs text-slate-400">
-                      {(m.crates as { crate_no?: string } | null)?.crate_no ?? ""}
-                    </div>
-                  </div>
-                  <span className="shrink-0 text-xs text-slate-400">{relTime(m.occurred_at)}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-
-        <Card title="Storage Rooms" padded={false}>
-          <ul className="divide-y divide-slate-100">
-            {data.rooms.map((r) => (
-              <li key={r.id} className="flex items-center justify-between px-5 py-3 text-sm">
-                <span className="text-slate-700">{r.name}</span>
-                <span className="flex items-center gap-2">
-                  <span className="tabnum text-xs text-slate-500">{r.capacity_pallets} slots</span>
-                  <Badge tone={r.is_available ? "green" : "slate"}>{r.is_available ? "ON" : "OFF"}</Badge>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </Card>
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-slate-400">Crate Status</div>
+      <div className="mb-6 grid gap-4 lg:grid-cols-3">
+        {[
+          { label: "In Warehouse", n: byStatus("warehouse"), sub: "crates pending assignment", tone: "text-amber-600 border-amber-400" },
+          { label: "In Storage", n: byStatus("storage"), sub: "crates assigned to rack", tone: "text-blue-600 border-blue-400" },
+          { label: "Sent to Cutting", n: byStatus("cutting"), sub: "crates in cutting queue →", tone: "text-emerald-600 border-emerald-400" },
+        ].map((c) => (
+          <div key={c.label} className={`rounded-xl border border-slate-200 border-l-4 ${c.tone.split(" ")[1]} bg-white p-4 shadow-sm`}>
+            <div className="text-sm text-slate-600">{c.label}</div>
+            <div className={`mt-1 text-3xl font-bold tabnum ${c.tone.split(" ")[0]}`}>{num(c.n)}</div>
+            <div className="mt-1 text-xs text-slate-400">{c.sub}</div>
+          </div>
+        ))}
       </div>
+
+      <Card title="📋 Received Stock" padded={false}>
+        <DataTable
+          rows={d.received as unknown as Array<Record<string, unknown>>}
+          empty="No stock received yet."
+          columns={[
+            { key: "crate_no", header: "Crate Code", render: (r) => <span className="font-mono text-xs">{String(r.crate_no)}</span> },
+            { key: "batch_no", header: "Batch", render: (r) => String(r.batch_no ?? "—") },
+            { key: "sku", header: "SKU", render: (r) => String((r.products as Record<string, unknown> | null)?.sku ?? "—") },
+            { key: "status", header: "Status", render: (r) => String(r.status) },
+            { key: "location", header: "Location", render: (r) => String((r.locations as Record<string, unknown> | null)?.code ?? "—") },
+            { key: "updated_at", header: "Received", render: (r) => dateTimeStr(String(r.updated_at)) },
+            { key: "_a", header: "Action", render: () => <a className="text-sm font-medium text-brand-700 hover:underline" href="#/wh/pallet-creation">Palletize →</a> },
+          ] as Column<Record<string, unknown>>[]}
+        />
+      </Card>
     </>
   );
 }
 
-/* -------------------------------------------------------------- Weighing Entry */
-
-type BandProduct = { id: number; sku: string; band_code: string | null; band_min_kg: string | null; band_max_kg: string | null; class_id: number | null };
-type CrateType = { id: number; name: string; tare_kg: string; default_heads: number | null };
 type ClassRow = { id: number; code: string; name: string };
+type BandProduct = { id: number; sku: string; band_code: string; band_min_kg: string; band_max_kg: string; class_id: number };
+type CrateType = { id: number; name: string; tare_kg: string; default_heads: number | null };
 
 export function WeighingEntry() {
   const { can, profile } = useSession();
