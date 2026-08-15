@@ -8,6 +8,7 @@
  * rule or a period lock.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import QRCode from "qrcode";
 import { rpc, sb } from "./supabase";
 import {
   Badge, Button, Card, DataTable, ErrorBox, Field, PageHeader, Spinner, inputClass,
@@ -1809,6 +1810,216 @@ export function FpsStation() {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ================================================================ FPS Pallets
+ * Manage FPS pallets: reassign crates between pallets, print pallet tags,
+ * assign a pallet to a storage slot, delete. Mirrors the live PMAI screen —
+ * palletizing itself happens at the FPS Receiving Station.
+ */
+export function FpsPallets() {
+  const [q, setQ] = useState("");
+  const [msg, setMsg] = useState<{ ok: boolean; message: string } | null>(null);
+  const [storeFor, setStoreFor] = useState<string>("");   // pallet id showing slot picker
+  const [slotSel, setSlotSel] = useState<string>("");
+  const [confirmDel, setConfirmDel] = useState<string>(""); // pallet id pending delete confirm
+  const [reassign, setReassign] = useState<Record<string, string>>({}); // crate_no -> target
+
+  const { data, error, loading, reload } = useLoad(async () => {
+    const pallets = await rows(sb().from("pallets")
+      .select("id,pallet_no,status,crate_count,total_weight_kg")
+      .eq("kind", "fps").neq("status", "dispatched")
+      .order("id", { ascending: false }).limit(60));
+    const ids = pallets.map((p) => p.id as number);
+    const crates = ids.length
+      ? await rows(sb().from("crates")
+          .select("crate_no,fps_band,fps_class,net_weight_kg,heads,production_date,pallet_id,customers!crates_fps_customer_id_fkey(name)")
+          .in("pallet_id", ids).eq("is_voided", false).order("crate_no"))
+      : [];
+    const slots = await rows(sb().from("v_storage_map")
+      .select("location_id,slot_code,room_name,room_available,is_occupied")
+      .eq("is_occupied", false).eq("room_available", true).order("slot_code").limit(400));
+    return { pallets, crates, slots };
+  }, []);
+
+  if (loading) return <Spinner />;
+  if (error) return <ErrorBox message={error} />;
+  const { pallets, crates, slots } = data!;
+
+  async function act(fn: string, args: Record<string, unknown>) {
+    const r = await rpc(fn, args);
+    setMsg({ ok: Boolean(r.ok), message: String(r.message ?? "") });
+    if (r.ok) { setStoreFor(""); setSlotSel(""); setConfirmDel(""); reload(); }
+  }
+
+  function printTag(p: Row, list: Row[]) {
+    const cust = String((list[0]?.customers as Row | null)?.name ?? "");
+    const band = String(list[0]?.fps_band ?? "");
+    const heads = list.reduce((s, c) => s + Number(c.heads ?? 0), 0);
+    const prod = list.reduce((m, c) => String(c.production_date) > m ? String(c.production_date) : m, "");
+    void QRCode.toDataURL(String(p.pallet_no), { margin: 0, width: 220 }).then((qr) => {
+      const win = window.open("", "_blank", "width=480,height=520");
+      if (!win) return;
+      win.document.write(`<html><head><style>
+        @page { size: 100mm 75mm; margin: 4mm; }
+        body { font-family: Arial; margin: 0; padding: 10px; }
+        .row { display: flex; gap: 14px; align-items: center; }
+        h1 { font-size: 26px; margin: 0 0 4px; }
+        .meta { font-size: 15px; line-height: 1.5; }
+        b.band { font-size: 20px; }
+      </style></head><body>
+        <div class="row">
+          <img src="${qr}" width="150" height="150" />
+          <div>
+            <h1>${String(p.pallet_no)}</h1>
+            <div class="meta">
+              ${cust}${cust && band ? " · " : ""}<b class="band">${band}</b><br/>
+              ${num(Number(p.crate_count ?? list.length))} crates · ${kg(Number(p.total_weight_kg ?? 0))} kg<br/>
+              ${num(heads)} heads<br/>
+              Prod: ${prod ? dateStr(prod) : "—"}
+            </div>
+          </div>
+        </div>
+      </body></html>`);
+      win.document.close(); win.print();
+    });
+  }
+
+  const needle = q.trim().toLowerCase();
+  const shown = pallets.filter((p) => {
+    if (!needle) return true;
+    const list = crates.filter((c) => c.pallet_id === p.id);
+    return String(p.pallet_no).toLowerCase().includes(needle) ||
+      list.some((c) => String(c.fps_band ?? "").toLowerCase().includes(needle) ||
+                       String((c.customers as Row | null)?.name ?? "").toLowerCase().includes(needle));
+  });
+
+  return (
+    <>
+      <div className="mb-5 rounded-xl bg-slate-900 px-5 py-4 text-white">
+        <div className="text-[10px] font-semibold uppercase tracking-widest text-emerald-400">FPS Pallets</div>
+        <h1 className="mt-0.5 text-lg font-bold">Manage FPS pallets — reassign crates, print tags, assign to storage</h1>
+        <p className="mt-0.5 text-xs text-slate-400">
+          Palletizing now happens at the <a href="#/wh/fps-receiving-station" className="font-semibold text-emerald-300 hover:underline">FPS Receiving Station</a> → (scan a label to receive it and pack it into a pallet in one step).
+        </p>
+      </div>
+
+      <Card className="mb-5">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-semibold text-slate-700">🔍 Find pallet</span>
+          <input className={`${inputClass} !w-72`} placeholder="Search by pallet no., SKU, or customer…"
+            value={q} onChange={(e) => setQ(e.target.value)} />
+          {msg && <span className={`text-sm ${msg.ok ? "text-emerald-600" : "text-rose-600"}`}>{msg.message}</span>}
+        </div>
+      </Card>
+
+      {shown.length === 0 ? (
+        <p className="py-16 text-center text-sm text-slate-400">No FPS pallets yet — receive FPS labels at the FPS Receiving Station to build one.</p>
+      ) : (
+        <div className="grid gap-5 xl:grid-cols-2">
+          {shown.map((p) => {
+            const pid = String(p.id);
+            const list = crates.filter((c) => c.pallet_id === p.id);
+            const heads = list.reduce((s, c) => s + Number(c.heads ?? 0), 0);
+            const prod = list.reduce((m, c) => String(c.production_date) > m ? String(c.production_date) : m, "");
+            const cust = String((list[0]?.customers as Row | null)?.name ?? "—");
+            const band = String(list[0]?.fps_band ?? "—");
+            return (
+              <Card key={pid}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <span className="rounded-md bg-slate-900 px-2.5 py-1 text-sm font-bold text-white">Pallet {String(p.pallet_no).replace(/^PLT-?/, "")}</span>
+                    <span className="ml-2 rounded-md bg-amber-400 px-2 py-0.5 text-[11px] font-bold text-amber-900">{String(p.status) === "open" ? "Pending" : String(p.status)}</span>
+                    <div className="mt-1.5 text-xs text-slate-500">{cust} · <b className="text-rose-700">{band}</b></div>
+                  </div>
+                  <div className="text-right text-xs leading-5 text-slate-500">
+                    <b className="text-slate-700">{num(list.length)} crates · {kg(Number(p.total_weight_kg ?? 0))} kg</b><br/>
+                    {num(heads)} heads<br/>
+                    Prod: {prod ? dateStr(prod) : "—"}
+                  </div>
+                </div>
+
+                <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                  <button onClick={() => printTag(p, list)}
+                    className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100">🏷 Tag</button>
+                  <button onClick={() => { setStoreFor(storeFor === pid ? "" : pid); setSlotSel(""); }}
+                    className="rounded border border-emerald-700 bg-emerald-700 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-800">🏬 Store</button>
+                  {confirmDel === pid ? (
+                    <>
+                      <button onClick={() => void act("rpc_delete_pallet", { p_pallet_id: p.id, p_delete_crates: false })}
+                        className="rounded border border-rose-600 bg-rose-600 px-2 py-1 text-xs font-bold text-white">Confirm delete</button>
+                      <button onClick={() => setConfirmDel("")}
+                        className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600">Cancel</button>
+                    </>
+                  ) : (
+                    <button onClick={() => setConfirmDel(pid)}
+                      className="rounded border border-rose-300 px-2 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50">🗑 Delete</button>
+                  )}
+                </div>
+
+                {storeFor === pid && (
+                  <div className="mt-2 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 p-2">
+                    <select className={`${inputClass} !w-64`} value={slotSel} onChange={(e) => setSlotSel(e.target.value)}>
+                      <option value="">— choose a free slot —</option>
+                      {slots.map((s) => (
+                        <option key={String(s.location_id)} value={String(s.location_id)}>
+                          {String(s.slot_code)} · {String(s.room_name)}
+                        </option>
+                      ))}
+                    </select>
+                    <Button disabled={!slotSel}
+                      onClick={() => void act("rpc_close_pallet", { p_pallet_id: p.id, p_slot_id: Number(slotSel) })}>
+                      Store here
+                    </Button>
+                  </div>
+                )}
+
+                <div className="thin-scroll mt-3 max-h-56 overflow-y-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        <th className="py-1.5 pr-2">Batch</th><th className="py-1.5 pr-2">SKU</th>
+                        <th className="py-1.5 pr-2">Wt</th><th className="py-1.5 pr-2">Heads</th>
+                        <th className="py-1.5">Reassign</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {list.map((c) => {
+                        const cn = String(c.crate_no);
+                        return (
+                          <tr key={cn}>
+                            <td className="py-1.5 pr-2 font-mono text-[11px] text-slate-600">{cn}</td>
+                            <td className="py-1.5 pr-2 font-semibold text-rose-700">{String(c.fps_band ?? "—")}</td>
+                            <td className="py-1.5 pr-2 tabnum">{kg(Number(c.net_weight_kg))}</td>
+                            <td className="py-1.5 pr-2 tabnum">{num(Number(c.heads ?? 0))}</td>
+                            <td className="py-1.5">
+                              <div className="flex items-center gap-1">
+                                <select className="w-36 rounded border border-slate-300 px-1.5 py-1 text-xs"
+                                  value={reassign[cn] ?? ""}
+                                  onChange={(e) => setReassign((m) => ({ ...m, [cn]: e.target.value }))}>
+                                  <option value="">— remove from pallet —</option>
+                                  {pallets.filter((t) => t.id !== p.id).map((t) => (
+                                    <option key={String(t.id)} value={String(t.id)}>→ Pallet {String(t.pallet_no).replace(/^PLT-?/, "")}</option>
+                                  ))}
+                                </select>
+                                <button title="Apply"
+                                  onClick={() => void act("rpc_reassign_crate", { p_crate_no: cn, p_pallet_id: reassign[cn] ? Number(reassign[cn]) : null })}
+                                  className="rounded border border-slate-300 px-1.5 py-1 text-xs text-slate-600 hover:bg-slate-100">→</button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            );
+          })}
         </div>
       )}
     </>

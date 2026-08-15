@@ -14,7 +14,7 @@ import {
 } from "./reports";
 import {
   Picklist, Issuance, Dispatch, PalletCreation, LocationTransfer,
-  PalletTransfer, PalletDisposition, LockedRecords, Rbac, LiveBirdReceiving, Byproducts, ImportWeighing, FpsEntry, FpsCustomers, FpsStation,
+  PalletTransfer, PalletDisposition, LockedRecords, Rbac, LiveBirdReceiving, Byproducts, ImportWeighing, FpsEntry, FpsCustomers, FpsStation, FpsPallets,
 } from "./operations";
 
 /**
@@ -61,6 +61,7 @@ const SCREENS: Record<string, React.ComponentType> = {
   "/bd/import": ImportWeighing,
   "/fps/entry": FpsEntry,
   "/fps/station": FpsStation,
+  "/fps/pallets": FpsPallets,
   "/system/master-data": FpsCustomers,
 };
 
