@@ -59,7 +59,7 @@ const SCREENS: Record<string, React.ComponentType> = {
   "/bd/live-bird-receiving": LiveBirdReceiving,
   "/bd/byproducts": Byproducts,
   "/bd/import": ImportWeighing,
-  "/fps": FpsEntry,
+  "/fps/entry": FpsEntry,
   "/system/master-data": FpsCustomers,
 };
 
