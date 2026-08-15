@@ -14,7 +14,7 @@ import {
 } from "./reports";
 import {
   Picklist, Issuance, Dispatch, PalletCreation, LocationTransfer,
-  PalletTransfer, PalletDisposition, LockedRecords, Rbac, LiveBirdReceiving, Byproducts, ImportWeighing,
+  PalletTransfer, PalletDisposition, LockedRecords, Rbac, LiveBirdReceiving, Byproducts, ImportWeighing, FpsEntry, FpsCustomers,
 } from "./operations";
 
 /**
@@ -59,6 +59,8 @@ const SCREENS: Record<string, React.ComponentType> = {
   "/bd/live-bird-receiving": LiveBirdReceiving,
   "/bd/byproducts": Byproducts,
   "/bd/import": ImportWeighing,
+  "/fps": FpsEntry,
+  "/system/master-data": FpsCustomers,
 };
 
 function Login() {
