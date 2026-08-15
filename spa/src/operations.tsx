@@ -919,3 +919,277 @@ export function Rbac() {
     </>
   );
 }
+
+/* ================================================== Live Bird Receiving */
+
+type Truck = {
+  productionDate: string; customerName: string; farmOrigin: string; houseNumber: string;
+  plateNo: string; scaleIn: string; scaleOut: string; birds: string;
+  doaHeads: string; doaWeight: string;
+};
+const emptyTruck = (date: string): Truck => ({
+  productionDate: date, customerName: "", farmOrigin: "", houseNumber: "",
+  plateNo: "", scaleIn: "", scaleOut: "", birds: "", doaHeads: "0", doaWeight: "0",
+});
+const truckWeight = (t: Truck) => Math.max(0, (Number(t.scaleIn) || 0) - (Number(t.scaleOut) || 0));
+
+export function LiveBirdReceiving() {
+  const today = new Date().toISOString().slice(0, 10);
+  const [mode, setMode] = useState<"list" | "form">("list");
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [viewDate, setViewDate] = useState<string | null>(null);
+  const [sessionDate, setSessionDate] = useState(today);
+  const [notes, setNotes] = useState("");
+  const [trucks, setTrucks] = useState<Truck[]>([emptyTruck(today)]);
+  const [saving, setSaving] = useState(false);
+
+  const { data, error, loading, reload } = useLoad(async () =>
+    rows(sb().from("live_bird_receipts")
+      .select("id,receipt_no,receipt_date,production_date,customer_name,farm_origin,house_number,plate_no,heads_received,heads_doa,doa_weight_kg,net_weight_kg,ave_weight_kg,users!live_bird_receipts_received_by_fkey(full_name)")
+      .order("receipt_date", { ascending: false }).order("id").limit(400)), []);
+
+  if (loading) return <Spinner />;
+  if (error) return <ErrorBox message={error} />;
+  const receipts = data!;
+
+  const setTruck = (i: number, k: keyof Truck, v: string) =>
+    setTrucks((prev) => prev.map((t, j) => (j === i ? { ...t, [k]: v } : t)));
+
+  // Summary across truck cards — mirrors the live form's SUMMARY strip.
+  const sum = trucks.reduce(
+    (a, t) => {
+      const wt = truckWeight(t);
+      const birds = Number(t.birds) || 0;
+      const doa = Number(t.doaHeads) || 0;
+      const doaWt = Number(t.doaWeight) || 0;
+      return {
+        birds: a.birds + birds, wt: a.wt + wt, doa: a.doa + doa, doaWt: a.doaWt + doaWt,
+        fp: a.fp + Math.max(0, birds - doa), fpWt: a.fpWt + Math.max(0, wt - doaWt),
+      };
+    },
+    { birds: 0, wt: 0, doa: 0, doaWt: 0, fp: 0, fpWt: 0 });
+
+  async function saveSession() {
+    setSaving(true);
+    const r = await rpc("rpc_create_lbr_session", {
+      p_receipt_date: sessionDate,
+      p_notes: notes || null,
+      p_trucks: trucks.map((t) => ({
+        production_date: t.productionDate || sessionDate,
+        customer_name: t.customerName, farm_origin: t.farmOrigin,
+        house_number: t.houseNumber, plate_no: t.plateNo,
+        scale_in_kg: Number(t.scaleIn) || 0, scale_out_kg: Number(t.scaleOut) || 0,
+        birds: Number(t.birds) || 0, doa_heads: Number(t.doaHeads) || 0,
+        doa_weight_kg: Number(t.doaWeight) || 0,
+      })),
+    });
+    setSaving(false);
+    setResult({ ok: Boolean(r.ok), message: String(r.message ?? "") });
+    if (r.ok) {
+      setMode("list");
+      setTrucks([emptyTruck(today)]);
+      setNotes("");
+      reload();
+    }
+  }
+
+  /* ---------------- entry form: one card per truck, saved all at once */
+  if (mode === "form") {
+    return (
+      <>
+        <div className="mb-6 flex items-center gap-3">
+          <button className="text-sm text-slate-500 hover:text-slate-800" onClick={() => setMode("list")}>← Back</button>
+          <div>
+            <h1 className="text-xl font-semibold text-slate-900">New Live Bird Receiving</h1>
+            <p className="text-sm text-slate-500">Fill in one card per truck, then save all at once.</p>
+          </div>
+        </div>
+
+        <Card title="Session" className="mb-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <Field label="Receiving Date *">
+              <input type="date" className={inputClass} value={sessionDate} onChange={(e) => setSessionDate(e.target.value)} />
+            </Field>
+            <Field label="Notes (optional)">
+              <input className={`${inputClass} min-w-72`} value={notes} placeholder="Any remarks for this session…"
+                onChange={(e) => setNotes(e.target.value)} />
+            </Field>
+          </div>
+        </Card>
+
+        {trucks.map((t, i) => {
+          const wt = truckWeight(t);
+          const birds = Number(t.birds) || 0;
+          const doa = Number(t.doaHeads) || 0;
+          const doaWt = Number(t.doaWeight) || 0;
+          return (
+            <Card key={i} className="mb-4"
+              title={`Truck ${i + 1}`}
+              action={<span className="text-xs uppercase tracking-wide text-slate-400">
+                {t.plateNo ? t.plateNo : "No plate entered"}
+                {trucks.length > 1 && (
+                  <button className="ml-3 text-rose-600 hover:underline"
+                    onClick={() => setTrucks((p) => p.filter((_, j) => j !== i))}>Remove</button>
+                )}
+              </span>}>
+              <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-slate-400">Delivery Info</p>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Field label="Production Date *">
+                  <input type="date" className={inputClass} value={t.productionDate} onChange={(e) => setTruck(i, "productionDate", e.target.value)} />
+                </Field>
+                <Field label="Customer Name *">
+                  <input className={inputClass} value={t.customerName} placeholder="e.g. PMAI" onChange={(e) => setTruck(i, "customerName", e.target.value)} />
+                </Field>
+                <Field label="Farm Origin *">
+                  <input className={inputClass} value={t.farmOrigin} placeholder="e.g. Magalang" onChange={(e) => setTruck(i, "farmOrigin", e.target.value)} />
+                </Field>
+                <Field label="House Number *">
+                  <input className={inputClass} value={t.houseNumber} placeholder="e.g. 1" onChange={(e) => setTruck(i, "houseNumber", e.target.value)} />
+                </Field>
+                <Field label="Plate No. *">
+                  <input className={inputClass} value={t.plateNo} placeholder="e.g. ABC 1234" onChange={(e) => setTruck(i, "plateNo", e.target.value)} />
+                </Field>
+              </div>
+              <p className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-widest text-slate-400">Weight &amp; Birds</p>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                <Field label="Truck Scale In (kg) *">
+                  <input type="number" min="0" step="0.001" className={inputClass} value={t.scaleIn} placeholder="0.000" onChange={(e) => setTruck(i, "scaleIn", e.target.value)} />
+                </Field>
+                <Field label="Truck Scale Out (kg) *">
+                  <input type="number" min="0" step="0.001" className={inputClass} value={t.scaleOut} placeholder="0.000" onChange={(e) => setTruck(i, "scaleOut", e.target.value)} />
+                </Field>
+                <Field label="Total Weight (kg)">
+                  <input className={`${inputClass} bg-slate-50 text-emerald-700`} readOnly value={kg(wt)} />
+                </Field>
+                <Field label="Total No. of Birds *">
+                  <input type="number" min="0" className={inputClass} value={t.birds} placeholder="0" onChange={(e) => setTruck(i, "birds", e.target.value)} />
+                </Field>
+                <Field label="ALW (kg/bird)">
+                  <input className={`${inputClass} bg-slate-50 text-emerald-700`} readOnly value={kg(birds > 0 ? wt / birds : 0)} />
+                </Field>
+              </div>
+              <p className="mb-2 mt-4 text-[11px] font-semibold uppercase tracking-widest text-slate-400">DOA &amp; For Process</p>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <Field label="DOA Heads *">
+                  <input type="number" min="0" className={inputClass} value={t.doaHeads} onChange={(e) => setTruck(i, "doaHeads", e.target.value)} />
+                </Field>
+                <Field label="DOA Weight (kg) *">
+                  <input type="number" min="0" step="0.01" className={inputClass} value={t.doaWeight} onChange={(e) => setTruck(i, "doaWeight", e.target.value)} />
+                </Field>
+                <Field label="Total for Process">
+                  <input className={`${inputClass} bg-slate-50`} readOnly value={num(Math.max(0, birds - doa))} />
+                </Field>
+                <Field label="Total for Process Weight (kg)">
+                  <input className={`${inputClass} bg-slate-50 text-emerald-700`} readOnly value={kg(Math.max(0, wt - doaWt))} />
+                </Field>
+              </div>
+            </Card>
+          );
+        })}
+
+        <button
+          className="mb-4 w-full rounded-xl border-2 border-dashed border-slate-300 py-3 text-sm font-medium text-slate-500 hover:border-brand-400 hover:text-brand-700"
+          onClick={() => setTrucks((p) => [...p, emptyTruck(sessionDate)])}>
+          + Add Another Truck
+        </button>
+
+        <Card title={`Summary — ${trucks.length} truck(s)`} className="mb-4">
+          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {([
+              ["Total Birds", num(sum.birds), ""],
+              ["Total Weight", kg(sum.wt) + " kg", "text-emerald-700"],
+              ["Avg. ALW", kg(sum.birds > 0 ? sum.wt / sum.birds : 0) + " kg", "text-emerald-700"],
+              ["DOA Heads", num(sum.doa), "text-red-600"],
+              ["DOA Weight", kg(sum.doaWt) + " kg", "text-red-600"],
+              ["For Process", num(sum.fp), "text-emerald-600"],
+              ["For Process Weight", kg(sum.fpWt) + " kg", "text-emerald-600"],
+            ] as const).map(([label, value, tone]) => (
+              <div key={label} className="rounded-lg bg-slate-50 px-4 py-3">
+                <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">{label}</div>
+                <div className={`mt-1 text-lg font-semibold ${tone || "text-slate-900"}`}>{value}</div>
+              </div>
+            ))}
+          </div>
+          <Result r={result} />
+          <div className="mt-4 flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setMode("list")}>Cancel</Button>
+            <Button disabled={saving} onClick={() => void saveSession()}>
+              {saving ? "Saving…" : "Save Receiving Session"}
+            </Button>
+          </div>
+        </Card>
+      </>
+    );
+  }
+
+  /* ---------------- list of sessions, grouped by receiving date */
+  const sessions = new Map<string, Row[]>();
+  for (const r of receipts) {
+    const d = String(r.receipt_date);
+    if (!sessions.has(d)) sessions.set(d, []);
+    sessions.get(d)!.push(r);
+  }
+  const sessionRows: Row[] = [...sessions.entries()].map(([date, tr]) => {
+    const birds = tr.reduce((a, t) => a + Number(t.heads_received ?? 0), 0);
+    const doa = tr.reduce((a, t) => a + Number(t.heads_doa ?? 0), 0);
+    const wt = tr.reduce((a, t) => a + Number(t.net_weight_kg ?? 0), 0);
+    return {
+      date, trucks: tr.length, birds, doa, wt,
+      alw: birds > 0 ? wt / birds : 0, forProcess: birds - doa,
+      receivedBy: [...new Set(tr.map((t) => String((t.users as Row | null)?.full_name ?? "")))].filter(Boolean).join(", "),
+    };
+  });
+
+  const sessionColumns: Column<Row>[] = [
+    { key: "date", header: "Date", render: (r) => dateStr(String(r.date)) },
+    { key: "trucks", header: "Trucks", align: "right", render: (r) => num(Number(r.trucks)) },
+    { key: "birds", header: "Total Birds", align: "right", render: (r) => <strong>{num(Number(r.birds))}</strong> },
+    { key: "wt", header: "Total Weight", align: "right", render: (r) => `${kg(Number(r.wt))} kg` },
+    { key: "alw", header: "ALW", align: "right", render: (r) => `${kg(Number(r.alw))} kg` },
+    { key: "doa", header: "DOA Heads", align: "right", render: (r) => <span className="font-medium text-red-600">{num(Number(r.doa))}</span> },
+    { key: "forProcess", header: "For Process", align: "right", render: (r) => <span className="font-medium text-emerald-600">{num(Number(r.forProcess))}</span> },
+    { key: "receivedBy", header: "Received By" },
+    {
+      key: "_view", header: "", render: (r) => (
+        <button className="text-sm font-medium text-brand-700 hover:underline"
+          onClick={() => setViewDate(viewDate === String(r.date) ? null : String(r.date))}>
+          {viewDate === String(r.date) ? "Hide" : "View →"}
+        </button>
+      ),
+    },
+  ];
+
+  const truckColumns: Column<Row>[] = [
+    { key: "receipt_no", header: "Receipt" },
+    { key: "customer_name", header: "Customer", render: (r) => String(r.customer_name ?? "—") },
+    { key: "farm_origin", header: "Farm Origin", render: (r) => String(r.farm_origin ?? "—") },
+    { key: "house_number", header: "House", render: (r) => String(r.house_number ?? "—") },
+    { key: "plate_no", header: "Plate", render: (r) => String(r.plate_no ?? "—") },
+    { key: "heads_received", header: "Birds", align: "right", render: (r) => num(Number(r.heads_received)) },
+    { key: "heads_doa", header: "DOA", align: "right", render: (r) => <span className="text-red-600">{num(Number(r.heads_doa))}</span> },
+    { key: "doa_weight_kg", header: "DOA (kg)", align: "right", render: (r) => kg(Number(r.doa_weight_kg ?? 0)) },
+    { key: "net_weight_kg", header: "Weight (kg)", align: "right", render: (r) => kg(Number(r.net_weight_kg)) },
+    { key: "ave_weight_kg", header: "ALW", align: "right", render: (r) => kg(Number(r.ave_weight_kg ?? 0)) },
+  ];
+
+  return (
+    <>
+      <div className="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900">Live Bird Receiving</h1>
+          <p className="mt-1 text-sm text-slate-500">All receiving sessions</p>
+        </div>
+        <Button onClick={() => { setResult(null); setMode("form"); }}>+ New Session</Button>
+      </div>
+      {result && mode === "list" && <div className="mb-3"><Result r={result} /></div>}
+      <Card padded={false}>
+        <DataTable columns={sessionColumns} rows={sessionRows} empty="No receiving sessions yet." />
+      </Card>
+      {viewDate && (
+        <Card title={`Trucks on ${dateStr(viewDate)}`} padded={false} className="mt-5">
+          <DataTable columns={truckColumns} rows={sessions.get(viewDate) ?? []} empty="No trucks." />
+        </Card>
+      )}
+    </>
+  );
+}
