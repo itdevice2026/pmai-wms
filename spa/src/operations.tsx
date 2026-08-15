@@ -1410,3 +1410,286 @@ export function ImportWeighing() {
     </>
   );
 }
+
+/* ================================================== FPS Entry + Customers */
+
+const FPS_CLASSES = ["Class A", "Class B", "Class C", "FG", "BP", "Class A-NL", "Class B-NL"];
+
+export function FpsEntry() {
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [cls, setCls] = useState("Class A");
+  const [prodDate, setProdDate] = useState(new Date().toISOString().slice(0, 10));
+  const [expiry, setExpiry] = useState("");
+  const [customerId, setCustomerId] = useState("");
+  const [weight, setWeight] = useState("");
+  const [heads, setHeads] = useState("15");
+  const [crateTypeId, setCrateTypeId] = useState("");
+  const [autoPrint, setAutoPrint] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState("");
+  const [fCust, setFCust] = useState("");
+  const [fSku, setFSku] = useState("");
+
+  const { data, error, loading, reload } = useLoad(async () => {
+    const dayStart = new Date(); dayStart.setHours(0, 0, 0, 0);
+    const [customers, bands, types, recs] = await Promise.all([
+      rows(sb().from("customers").select("id,code,name").eq("is_active", true).order("name")),
+      rows(sb().from("customer_sku_bands").select("customer_id,band_code,min_kg,max_kg,sort_order").eq("is_active", true)),
+      rows(sb().from("crate_types").select("id,name").eq("is_active", true).order("sort_order")),
+      rows(sb().from("crates")
+        .select("id,crate_no,weighed_at,fps_class,fps_band,net_weight_kg,heads,customers!crates_fps_customer_id_fkey(name)")
+        .not("fps_customer_id", "is", null).gte("weighed_at", dayStart.toISOString())
+        .eq("is_voided", false).order("weighed_at", { ascending: false }).limit(200)),
+    ]);
+    return { customers, bands, types, recs };
+  }, []);
+
+  useEffect(() => {
+    if (!data) return;
+    setCrateTypeId((v) => v || String(data.types[0]?.id ?? ""));
+    // Generic customer auto-selected for Class A.
+    if (!customerId && cls === "Class A") {
+      const gen = data.customers.find((c) => String(c.code) === "GENERIC");
+      if (gen) setCustomerId(String(gen.id));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, cls]);
+
+  if (loading) return <Spinner />;
+  if (error) return <ErrorBox message={error} />;
+  const { customers, bands, types, recs } = data!;
+
+  const ph = (Number(weight) || 0) / (Number(heads) || 1);
+  const autoSku = weight
+    ? bands.filter((b) => String(b.customer_id) === customerId)
+        .sort((a, b) => Number(a.sort_order) - Number(b.sort_order))
+        .find((b) => ph >= Number(b.min_kg ?? 0) && ph <= Number(b.max_kg ?? 999))?.band_code ?? null
+    : null;
+
+  async function save() {
+    setSaving(true);
+    const r = await rpc("rpc_save_fps_entry", {
+      p_class: cls, p_customer_id: Number(customerId) || null, p_prod_date: prodDate,
+      p_weight_kg: Number(weight) || 0, p_heads: Number(heads) || 0,
+      p_crate_type_id: Number(crateTypeId) || null, p_expiry: expiry || null,
+    });
+    setSaving(false);
+    setResult({ ok: Boolean(r.ok), message: String(r.message ?? "") });
+    if (r.ok) {
+      if (autoPrint && r.crateNo) {
+        const win = window.open("", "_blank", "width=480,height=400");
+        if (win) {
+          win.document.write(`<pre style="font-family:Arial;font-size:16px;padding:16px">
+<b>${String(r.crateNo)}</b>\nSKU ${String(r.sku)} · ${cls}\n${customers.find((c) => String(c.id) === customerId)?.name ?? ""}\n${Number(weight).toFixed(2)} kg · ${heads} heads\n${prodDate}${expiry ? " · exp " + expiry : ""}</pre>`);
+          win.document.close(); win.print();
+        }
+      }
+      setWeight(""); reload();
+    }
+  }
+
+  const shown = recs.filter((r) =>
+    (!search.trim() || String(r.crate_no).toLowerCase().includes(search.trim().toLowerCase())) &&
+    (!fCust || String((r.customers as Row | null)?.name) === fCust) &&
+    (!fSku || String(r.fps_band) === fSku));
+  const skus = [...new Set(recs.map((r) => String(r.fps_band ?? "")))].filter(Boolean).sort();
+
+  return (
+    <>
+      <div className="mb-5 flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold text-slate-900">FPS Entry</h1>
+          <p className="mt-0.5 text-sm text-slate-500">Further Processing System — weigh & auto-assign SKU</p>
+        </div>
+        <div className="flex gap-2">
+          <a href="#/wh/fps-receiving" className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">📄 Records</a>
+          <a href="#/system/master-data" className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">⚙️ Manage Customers</a>
+        </div>
+      </div>
+      <div className="grid gap-5 lg:grid-cols-2">
+        <Card>
+          <Field label="Class / Band">
+            <select className={inputClass} value={cls} onChange={(e) => setCls(e.target.value)}>
+              {FPS_CLASSES.map((c) => <option key={c}>{c}</option>)}
+            </select>
+          </Field>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <Field label="Production Date">
+              <input type="date" className={inputClass} value={prodDate} onChange={(e) => setProdDate(e.target.value)} />
+            </Field>
+            <div>
+              <Field label="Expiration Date (optional)">
+                <input type="date" className={inputClass} value={expiry} onChange={(e) => setExpiry(e.target.value)} />
+              </Field>
+              <p className="mt-1 text-[11px] text-slate-400">Left blank → not printed on the label.</p>
+            </div>
+          </div>
+          <div className="mt-3">
+            <Field label="Customer">
+              <select className={inputClass} value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
+                <option value="">Select customer…</option>
+                {customers.map((c) => <option key={String(c.id)} value={String(c.id)}>{String(c.name)}</option>)}
+              </select>
+            </Field>
+            {cls === "Class A" && <p className="mt-1 text-[11px] text-slate-400">Generic customer (auto-selected for Class A).</p>}
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-3">
+            <Field label="Weight (kg)">
+              <input className={inputClass} inputMode="decimal" value={weight} placeholder="0" onChange={(e) => setWeight(e.target.value)} />
+            </Field>
+            <Field label="Heads (pcs)">
+              <input className={inputClass} inputMode="numeric" value={heads} onChange={(e) => setHeads(e.target.value)} />
+            </Field>
+          </div>
+          <div className="mt-3">
+            <Field label="Crate Type">
+              <select className={inputClass} value={crateTypeId} onChange={(e) => setCrateTypeId(e.target.value)}>
+                {types.map((t) => <option key={String(t.id)} value={String(t.id)}>{String(t.name)}</option>)}
+              </select>
+            </Field>
+          </div>
+          <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="text-[10px] font-semibold uppercase tracking-widest text-slate-400">Auto SKU</div>
+            {autoSku
+              ? <div className="mt-0.5 text-xl font-bold text-emerald-700">{String(autoSku)} <span className="text-xs font-normal text-slate-400">{ph.toFixed(3)} kg/head</span></div>
+              : <div className="mt-0.5 text-sm text-rose-500">{weight ? "No customer band matches — falls back to class ladder." : "— Enter a weight."}</div>}
+          </div>
+          <label className="mt-3 flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" checked={autoPrint} onChange={(e) => setAutoPrint(e.target.checked)} />
+            Auto-print label after saving
+          </label>
+          <Button className="mt-4 w-full py-3" disabled={saving} onClick={() => void save()}>
+            {saving ? "Saving…" : "Save Entry"}
+          </Button>
+          <Result r={result} />
+        </Card>
+
+        <Card title="Today's FPS Records (yours)">
+          <div className="mb-3 flex flex-wrap gap-2">
+            <input className={`${inputClass} !w-36`} placeholder="Search crate #…" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <select className={`${inputClass} !w-36`} value={fCust} onChange={(e) => setFCust(e.target.value)}>
+              <option value="">All customers</option>
+              {[...new Set(recs.map((r) => String((r.customers as Row | null)?.name ?? "")))].filter(Boolean).map((n) => <option key={n}>{n}</option>)}
+            </select>
+            <select className={`${inputClass} !w-28`} value={fSku} onChange={(e) => setFSku(e.target.value)}>
+              <option value="">All SKUs</option>
+              {skus.map((s) => <option key={s}>{s}</option>)}
+            </select>
+            <span className="self-center text-sm text-slate-400">{shown.length}</span>
+          </div>
+          <DataTable rows={shown} empty="No FPS entries yet today."
+            columns={[
+              { key: "_n", header: "#", render: (r) => String(shown.indexOf(r) + 1) },
+              { key: "crate_no", header: "Crate #", render: (r) => <span className="font-mono text-xs">{String(r.crate_no)}</span> },
+              { key: "weighed_at", header: "Time", render: (r) => new Date(String(r.weighed_at)).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }) },
+              { key: "fps_class", header: "Class" },
+              { key: "cust", header: "Customer", render: (r) => String((r.customers as Row | null)?.name ?? "—") },
+              { key: "fps_band", header: "SKU", render: (r) => <b className="text-emerald-700">{String(r.fps_band ?? "—")}</b> },
+              { key: "net_weight_kg", header: "Wt", align: "right", render: (r) => kg(Number(r.net_weight_kg)) },
+              { key: "heads", header: "Hd", align: "right" },
+            ] as Column<Row>[]} />
+        </Card>
+      </div>
+    </>
+  );
+}
+
+export function FpsCustomers() {
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [newName, setNewName] = useState("");
+  const [newBands, setNewBands] = useState<Array<{ code: string; min: string; max: string }>>([{ code: "", min: "", max: "" }]);
+  const [edits, setEdits] = useState<Record<string, { name: string; bands: Array<{ code: string; min: string; max: string }> }>>({});
+
+  const { data, error, loading, reload } = useLoad(async () => {
+    const [customers, bands] = await Promise.all([
+      rows(sb().from("customers").select("id,name").eq("is_active", true).order("name")),
+      rows(sb().from("customer_sku_bands").select("customer_id,band_code,min_kg,max_kg,sort_order").order("sort_order")),
+    ]);
+    return { customers, bands };
+  }, []);
+
+  if (loading) return <Spinner />;
+  if (error) return <ErrorBox message={error} />;
+  const { customers, bands } = data!;
+
+  const stateOf = (id: string, name: string) =>
+    edits[id] ?? {
+      name,
+      bands: bands.filter((b) => String(b.customer_id) === id)
+        .map((b) => ({ code: String(b.band_code), min: String(b.min_kg ?? ""), max: String(b.max_kg ?? "") })),
+    };
+  const setState = (id: string, s: { name: string; bands: Array<{ code: string; min: string; max: string }> }) =>
+    setEdits((m) => ({ ...m, [id]: s }));
+
+  async function act(fn: string, args: Record<string, unknown>) {
+    const r = await rpc(fn, args);
+    setResult({ ok: Boolean(r.ok), message: String(r.message ?? "") });
+    if (r.ok) { setEdits({}); reload(); }
+  }
+
+  const BandRows = ({ bandsList, onChange }: {
+    bandsList: Array<{ code: string; min: string; max: string }>;
+    onChange: (b: Array<{ code: string; min: string; max: string }>) => void;
+  }) => (
+    <>
+      {bandsList.map((b, i) => (
+        <div key={i} className="mb-1.5 flex gap-1.5">
+          <input className={`${inputClass} !w-40`} placeholder="SKU code" value={b.code}
+            onChange={(e) => onChange(bandsList.map((x, j) => j === i ? { ...x, code: e.target.value } : x))} />
+          <input className={`${inputClass} !w-24`} placeholder="from" value={b.min}
+            onChange={(e) => onChange(bandsList.map((x, j) => j === i ? { ...x, min: e.target.value } : x))} />
+          <input className={`${inputClass} !w-24`} placeholder="to" value={b.max}
+            onChange={(e) => onChange(bandsList.map((x, j) => j === i ? { ...x, max: e.target.value } : x))} />
+          <button className="rounded border border-rose-300 px-2 text-rose-600" onClick={() => onChange(bandsList.filter((_, j) => j !== i))}>×</button>
+        </div>
+      ))}
+      <button className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600"
+        onClick={() => onChange([...bandsList, { code: "", min: "", max: "" }])}>+ Add band</button>
+    </>
+  );
+
+  return (
+    <>
+      <div className="mb-5 flex items-center justify-between">
+        <a href="#/fps" className="rounded border border-slate-300 px-2.5 py-1 text-sm text-slate-600 hover:bg-slate-50">← FPS Entry</a>
+        <h1 className="text-lg font-bold text-brand-700">FPS Customers & SKUs</h1>
+      </div>
+      <div className="grid gap-5 lg:grid-cols-[minmax(260px,340px)_1fr]">
+        <Card title="＋ Add Customer">
+          <Field label="Customer name">
+            <input className={inputClass} value={newName} onChange={(e) => setNewName(e.target.value)} />
+          </Field>
+          <div className="mt-3">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-slate-400">SKU bands (per-piece kg)</div>
+            <BandRows bandsList={newBands} onChange={setNewBands} />
+          </div>
+          <Button className="mt-4 w-full" onClick={async () => {
+            await act("rpc_save_fps_customer", { p_id: null, p_name: newName, p_bands: newBands });
+            setNewName(""); setNewBands([{ code: "", min: "", max: "" }]);
+          }}>Save Customer</Button>
+          <Result r={result} />
+        </Card>
+        <div className="space-y-4">
+          {customers.map((c) => {
+            const id = String(c.id);
+            const s = stateOf(id, String(c.name));
+            return (
+              <Card key={id}
+                title={String(c.name)}
+                action={<Button className="!px-3 !py-1 text-xs" onClick={() =>
+                  act("rpc_save_fps_customer", { p_id: Number(id), p_name: s.name, p_bands: s.bands })}>Save</Button>}>
+                <input className={`${inputClass} mb-2 !w-72`} value={s.name}
+                  onChange={(e) => setState(id, { ...s, name: e.target.value })} />
+                <BandRows bandsList={s.bands} onChange={(b) => setState(id, { ...s, bands: b })} />
+                <div className="mt-2">
+                  <button className="rounded border border-rose-300 px-2 py-1 text-xs text-rose-600"
+                    onClick={() => act("rpc_delete_fps_customer", { p_id: Number(id) })}>Delete customer</button>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      </div>
+    </>
+  );
+}
