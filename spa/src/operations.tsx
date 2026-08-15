@@ -1276,3 +1276,137 @@ export function Byproducts() {
     </>
   );
 }
+
+/* ================================================== Import Weighing Records */
+// eslint-disable-next-line import/no-named-as-default-member
+import * as XLSX from "xlsx";
+
+const IMP_HEADERS = ["TRUCK #", "PROD DATE", "PALLET #", "SKU", "CRATES", "QTY HEADS", "QTY KILOS"];
+
+export function ImportWeighing() {
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [fileName, setFileName] = useState("");
+  const [parsed, setParsed] = useState<Array<Record<string, string>>>([]);
+
+  function downloadCsvTemplate() {
+    const blob = new Blob([IMP_HEADERS.join(",") + "\n"], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = "weighing-import-template.csv"; a.click();
+  }
+  function downloadXlsxTemplate() {
+    const ws = XLSX.utils.aoa_to_sheet([IMP_HEADERS]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Weighing");
+    XLSX.writeFile(wb, "weighing-import-template.xlsx");
+  }
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    setParsed([]); setResult(null);
+    if (!f) { setFileName(""); return; }
+    setFileName(f.name);
+    if (f.size > 10 * 1024 * 1024) {
+      setResult({ ok: false, message: "File is over the 10 MB limit." }); return;
+    }
+    const buf = await f.arrayBuffer();
+    const wb = XLSX.read(buf, { cellDates: true });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    const grid: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+    // The header row is found automatically; section titles and blanks skipped.
+    const hi = grid.findIndex((row) => {
+      const cells = row.map((c) => String(c).trim().toUpperCase());
+      return cells.includes("SKU") && cells.some((c) => c.includes("PROD"));
+    });
+    if (hi < 0) { setResult({ ok: false, message: "Could not find a header row containing SKU and PROD DATE." }); return; }
+    const headers = grid[hi].map((c) => String(c).trim().toUpperCase());
+    const col = (name: string) => headers.findIndex((h) => h.replace(/\s+/g, " ") === name);
+    const idx = {
+      truck: col("TRUCK #"), date: headers.findIndex((h) => h.includes("PROD")),
+      pallet: col("PALLET #"), sku: col("SKU"), crates: col("CRATES"),
+      heads: headers.findIndex((h) => h.includes("HEADS")), kilos: headers.findIndex((h) => h.includes("KILOS")),
+    };
+    const out: Array<Record<string, string>> = [];
+    for (const row of grid.slice(hi + 1)) {
+      const get = (n: number) => (n >= 0 ? String(row[n] ?? "").trim() : "");
+      const sku = get(idx.sku);
+      if (!sku && !get(idx.date) && !get(idx.heads)) continue; // blank / section rows
+      let dateRaw = get(idx.date);
+      const m = dateRaw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (m) dateRaw = `${m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
+      out.push({
+        truck: get(idx.truck), prod_date: dateRaw, pallet: get(idx.pallet),
+        sku, crates: get(idx.crates), heads: get(idx.heads), kilos: get(idx.kilos),
+      });
+    }
+    if (!out.length) { setResult({ ok: false, message: "No data rows found under the header." }); return; }
+    setParsed(out);
+    setResult({ ok: true, message: `${out.length} row(s) ready to import from ${f.name}.` });
+  }
+
+  async function doImport() {
+    if (!parsed.length) { setResult({ ok: false, message: "Choose a file first." }); return; }
+    setBusy(true);
+    const r = await rpc("rpc_import_weighings", { p_rows: parsed });
+    setBusy(false);
+    setResult({ ok: Boolean(r.ok), message: String(r.message ?? "") });
+    if (r.ok) setParsed([]);
+  }
+
+  const fmt = [
+    ["TRUCK #", "No", "Free text / number"],
+    ["PROD DATE", "Yes", "date — e.g. 6/21/2026 or 2026-06-21"],
+    ["PALLET #", "No", "Pallet number — a pallet is created per number (existing numbers are never reused)"],
+    ["SKU", "Yes", "FCA / FCB / FCC + band, e.g. FCA 1.1 (class read from the FC_ letter)"],
+    ["CRATES", "No", "Defaults to 1"],
+    ["QTY HEADS", "Yes", "Whole number > 0, e.g. 15"],
+    ["QTY KILOS", "Yes", "Total crate weight > 0, e.g. 17.9"],
+  ];
+
+  return (
+    <>
+      <PageHeader title="⬆️ Import Weighing Records"
+        subtitle="Bulk-upload your manual record sheet (Excel / CSV). Each row becomes a weighing record + crate, grouped onto its pallet — for back-filling production logged by hand." />
+      <a href="#/bd/weighing" className="mb-4 inline-block text-sm text-slate-500 hover:text-slate-800">← Back to Weighing</a>
+
+      <Card title="Step 1 — Download a template" className="mb-5">
+        <p className="mb-3 text-sm text-slate-500">Fill it in, then upload below. Column order doesn't matter — the header names do.</p>
+        <div className="flex gap-2">
+          <Button onClick={downloadXlsxTemplate}>⬇ Excel template (.xlsx)</Button>
+          <Button variant="secondary" onClick={downloadCsvTemplate}>⬇ CSV template (.csv)</Button>
+        </div>
+      </Card>
+
+      <Card title="Step 2 — Upload your file" className="mb-5">
+        <input type="file" accept=".xlsx,.xls,.csv"
+          onChange={(e) => void onFile(e)}
+          className="block w-full max-w-xl rounded-lg border border-slate-300 text-sm file:mr-3 file:rounded-l-lg file:border-0 file:bg-brand-600 file:px-4 file:py-2.5 file:text-sm file:font-medium file:text-white" />
+        <p className="mt-2 text-xs text-slate-400">Accepted: .xlsx, .xls, .csv · max 10 MB.{fileName ? ` — ${fileName}` : ""}</p>
+        <div className="mt-3">
+          <Button disabled={busy || !parsed.length} onClick={() => void doImport()}>
+            {busy ? "Importing…" : "⬆️ Import file"}
+          </Button>
+        </div>
+        <Result r={result} />
+      </Card>
+
+      <Card title="Column format" padded={false}>
+        <DataTable
+          rows={fmt.map(([c2, req, f2]) => ({ column: c2, required: req, format: f2 }))}
+          columns={[
+            { key: "column", header: "Column", render: (r) => <b>{String(r.column)}</b> },
+            { key: "required", header: "Required", render: (r) => <span className={r.required === "Yes" ? "text-rose-600" : "text-slate-500"}>{String(r.required)}</span> },
+            { key: "format", header: "Accepted values / format" },
+          ] as Column<Row>[]}
+        />
+        <ul className="space-y-1.5 px-5 py-4 text-xs text-slate-500">
+          <li>• The exact <b>system SKU / band</b> is computed from the class + (QTY KILOS ÷ QTY HEADS), same as the weighing screen — e.g. FCA 1.1 at 17.9 kg ÷ 15 → A11.</li>
+          <li>• Rows are <b>grouped by PALLET #</b>: a pallet is created per number and its crates are marked received + packed. An existing pallet number is never reused.</li>
+          <li>• Records are dated by <b>PROD DATE</b>, and crate type defaults to <b>Full</b>.</li>
+          <li>• The header row is found automatically; section titles (e.g. "BASIC DRESSING") and blank rows are skipped.</li>
+          <li>• Validation is <b>all-or-nothing</b>: if any row has an error, nothing is imported. Re-uploading the same file again will create duplicates.</li>
+        </ul>
+      </Card>
+    </>
+  );
+}

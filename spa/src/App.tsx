@@ -14,7 +14,7 @@ import {
 } from "./reports";
 import {
   Picklist, Issuance, Dispatch, PalletCreation, LocationTransfer,
-  PalletTransfer, PalletDisposition, LockedRecords, Rbac, LiveBirdReceiving, Byproducts,
+  PalletTransfer, PalletDisposition, LockedRecords, Rbac, LiveBirdReceiving, Byproducts, ImportWeighing,
 } from "./operations";
 
 /**
@@ -58,6 +58,7 @@ const SCREENS: Record<string, React.ComponentType> = {
   "/system/rbac": Rbac,
   "/bd/live-bird-receiving": LiveBirdReceiving,
   "/bd/byproducts": Byproducts,
+  "/bd/import": ImportWeighing,
 };
 
 function Login() {
