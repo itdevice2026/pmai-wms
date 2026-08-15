@@ -403,90 +403,157 @@ export function Dispatch() {
 
 export function PalletCreation() {
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
-  const [palletId, setPalletId] = useState<number | null>(null);
-  const [palletNo, setPalletNo] = useState<string | null>(null);
-  const [slotId, setSlotId] = useState("");
+  const [q, setQ] = useState(""); const [fSku, setFSku] = useState(""); const [fDate, setFDate] = useState("");
+  const [applied, setApplied] = useState({ q: "", sku: "", date: "" });
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [target, setTarget] = useState("new");
+  const [busy, setBusy] = useState(false);
 
   const { data, error, loading, reload } = useLoad(async () => {
-    const [crates, slots, openPallets] = await Promise.all([
+    const [crates, openPallets] = await Promise.all([
       rows(sb().from("crates")
         .select("crate_no,warehouse_code,production_date,heads,net_weight_kg,products(sku)")
         .is("pallet_id", null).eq("is_voided", false).eq("status", "warehouse")
-        .order("production_date").limit(200)),
-      rows(sb().from("locations").select("id,code").eq("is_slot", true).eq("is_active", true)
-        .order("code").limit(300)),
-      rows(sb().from("pallets").select("id,pallet_no,crate_count").eq("status", "open")
+        .order("production_date").limit(500)),
+      rows(sb().from("pallets").select("id,pallet_no,crate_count").eq("status", "open").eq("kind", "bd")
         .order("id", { ascending: false }).limit(20)),
     ]);
-    return { crates, slots, openPallets };
+    return { crates, openPallets };
   }, []);
-
-  async function act(fn: string, args: Record<string, unknown>) {
-    const r = await rpc(fn, args);
-    setResult({ ok: Boolean(r.ok), message: String(r.message ?? "") });
-    if (r.ok) reload();
-    return r;
-  }
 
   if (loading) return <Spinner />;
   if (error) return <ErrorBox message={error} />;
-  const { crates, slots, openPallets } = data!;
+  const { crates, openPallets } = data!;
 
-  const columns: Column<Row>[] = [
-    { key: "crate_no", header: "Crate Code" },
-    { key: "warehouse_code", header: "Warehouse Code", render: (r) => String(r.warehouse_code ?? "—") },
-    { key: "sku", header: "SKU", render: (r) => String((r.products as Row | null)?.sku ?? "—") },
-    { key: "production_date", header: "Prod. Date", render: (r) => dateStr(String(r.production_date)) },
-    { key: "heads", header: "Heads", align: "right", render: (r) => num(Number(r.heads ?? 0)) },
-    { key: "net_weight_kg", header: "Weight (kg)", align: "right", render: (r) => kg(Number(r.net_weight_kg ?? 0)) },
-  ];
+  const needle = applied.q.trim().toLowerCase();
+  const shown = crates.filter((r) =>
+    (!needle || String(r.crate_no).toLowerCase().includes(needle) ||
+      String(r.warehouse_code ?? "").toLowerCase().includes(needle)) &&
+    (!applied.sku || String((r.products as Row | null)?.sku ?? "") === applied.sku) &&
+    (!applied.date || String(r.production_date) === applied.date));
+  const skus = [...new Set(crates.map((r) => String((r.products as Row | null)?.sku ?? "")))].filter(Boolean).sort();
+  const allChecked = shown.length > 0 && shown.every((r) => sel.has(String(r.crate_no)));
+
+  function toggle(cn: string) {
+    setSel((prev) => { const n = new Set(prev); if (n.has(cn)) n.delete(cn); else n.add(cn); return n; });
+  }
+  function toggleAll() {
+    setSel(allChecked ? new Set() : new Set(shown.map((r) => String(r.crate_no))));
+  }
+
+  async function addToPallet() {
+    if (sel.size === 0) return;
+    setBusy(true);
+    let palletId: number; let palletNo: string;
+    if (target === "new") {
+      const r = await rpc("rpc_open_pallet", { p_kind: "bd" });
+      if (!r.ok) { setBusy(false); setResult({ ok: false, message: String(r.message ?? "") }); return; }
+      palletId = Number((r as Row).palletId); palletNo = String((r as Row).palletNo);
+    } else {
+      palletId = Number(target);
+      palletNo = String(openPallets.find((pp) => Number(pp.id) === palletId)?.pallet_no ?? target);
+    }
+    let okCount = 0; let firstErr = "";
+    for (const cn of sel) {
+      const r = await rpc("rpc_add_crate_to_pallet", { p_crate_no: cn, p_pallet_id: palletId });
+      if (r.ok) okCount++; else if (!firstErr) firstErr = String(r.message ?? "");
+    }
+    setBusy(false);
+    setResult({ ok: okCount > 0,
+      message: `${num(okCount)} of ${num(sel.size)} crate(s) packed onto ${palletNo}` + (firstErr ? ` — ${firstErr}` : "") });
+    setSel(new Set()); setTarget("new"); reload();
+  }
 
   return (
-    <>
-      <PageHeader title="BD Pallet Creation" subtitle="Open a pallet, scan un-palletized crates onto it, then close it into a storage slot. Pallets cap at 24 crates." />
+    <div className="pb-20">
+      <PageHeader title="BD Pallet Creation"
+        subtitle="Pack received basic-dressing crates onto a new or pending pallet. A pallet holds up to 24 crates." />
+
       <Card className="mb-5">
         <div className="flex flex-wrap items-end gap-3">
-          <Button onClick={async () => {
-            const r = await act("rpc_open_pallet", { p_kind: "bd" });
-            if (r.ok) { setPalletId(Number(r.palletId ?? r.pallet_id ?? 0) || null); setPalletNo(String(r.palletNo ?? r.pallet_no ?? "")); }
-          }}>＋ New pallet</Button>
-          <Field label="Or continue an open pallet">
-            <select className={inputClass} value={palletId ?? ""} onChange={(e) => {
-              const id = Number(e.target.value) || null;
-              setPalletId(id);
-              setPalletNo(String(openPallets.find((p) => Number(p.id) === id)?.pallet_no ?? ""));
-            }}>
-              <option value="">Choose…</option>
-              {openPallets.map((p) => (
-                <option key={String(p.id)} value={String(p.id)}>
-                  {String(p.pallet_no)} ({num(Number(p.crate_count ?? 0))} crates)
-                </option>
-              ))}
+          <div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-slate-400">Search</div>
+            <input className={`${inputClass} !w-56 font-mono`} placeholder="🔍 crate or warehouse code…"
+              value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
+          <div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-slate-400">SKU</div>
+            <select className={`${inputClass} !w-40`} value={fSku} onChange={(e) => setFSku(e.target.value)}>
+              <option value="">All SKUs</option>
+              {skus.map((k) => <option key={k}>{k}</option>)}
             </select>
-          </Field>
-          {palletId && (
-            <>
-              <Field label={`Scan crate onto ${palletNo}`}>
-                <ScanBox onScan={(code) => act("rpc_add_crate_to_pallet", { p_crate_no: code, p_pallet_id: palletId })} />
-              </Field>
-              <Field label="Close into slot">
-                <select className={inputClass} value={slotId} onChange={(e) => setSlotId(e.target.value)}>
-                  <option value="">Choose slot…</option>
-                  {slots.map((s) => <option key={String(s.id)} value={String(s.id)}>{String(s.code)}</option>)}
-                </select>
-              </Field>
-              <Button onClick={() => act("rpc_close_pallet", { p_pallet_id: palletId, p_slot_id: Number(slotId) || null })}>
-                Close pallet
-              </Button>
-            </>
-          )}
+          </div>
+          <div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-slate-400">Prod. Date</div>
+            <input type="date" className={`${inputClass} !w-40`} value={fDate} onChange={(e) => setFDate(e.target.value)} />
+          </div>
+          <button onClick={() => setApplied({ q, sku: fSku, date: fDate })}
+            className="rounded-lg bg-amber-400 px-4 py-2 text-sm font-bold text-amber-950 hover:bg-amber-500">Apply</button>
         </div>
         <Result r={result} />
       </Card>
-      <Card title={`Un-palletized crates (${crates.length})`} padded={false}>
-        <DataTable columns={columns} rows={crates} empty="No un-palletized crates in the warehouse." />
+
+      <Card padded={false}>
+        <div className="flex items-start justify-between px-5 pt-4">
+          <div>
+            <h2 className="text-sm font-bold text-slate-800">Un-palletized Crates</h2>
+            <p className="mt-0.5 text-xs text-slate-500">Received crates not yet on a pallet.</p>
+          </div>
+          <span className="text-xs text-slate-500">{num(sel.size)} of {num(shown.length)} selected</span>
+        </div>
+        <div className="thin-scroll mt-3 overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50/80">
+                <th className="w-10 px-4 py-2.5">
+                  <input type="checkbox" checked={allChecked} onChange={toggleAll} />
+                </th>
+                {["Crate Code", "Warehouse Code", "SKU", "Prod. Date", "Heads", "Weight (kg)"].map((h, i) => (
+                  <th key={h} className={`whitespace-nowrap px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500 ${i >= 4 ? "text-right" : "text-left"}`}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {shown.length === 0 && (
+                <tr><td colSpan={7} className="px-4 py-10 text-center text-sm text-slate-400">No un-palletized crates.</td></tr>
+              )}
+              {shown.map((r) => {
+                const cn = String(r.crate_no);
+                return (
+                  <tr key={cn} className={`hover:bg-slate-50 ${sel.has(cn) ? "bg-amber-50/60" : ""}`}>
+                    <td className="px-4 py-2.5"><input type="checkbox" checked={sel.has(cn)} onChange={() => toggle(cn)} /></td>
+                    <td className="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-slate-700">{cn}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-slate-600">{String(r.warehouse_code ?? "—")}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5 font-semibold text-slate-800">{String((r.products as Row | null)?.sku ?? "—")}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-slate-600">{dateStr(String(r.production_date))}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-right tabnum">{num(Number(r.heads ?? 0))}</td>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-right tabnum">{kg(Number(r.net_weight_kg ?? 0))}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </Card>
-    </>
+
+      <div className="fixed inset-x-0 bottom-0 z-20 border-t border-slate-200 bg-white/95 px-6 py-3 backdrop-blur lg:left-64">
+        <div className="flex items-center justify-end gap-3">
+          <span className="text-sm text-slate-500">{num(sel.size)} crate(s) selected</span>
+          <select className={`${inputClass} !w-52`} value={target} onChange={(e) => setTarget(e.target.value)}>
+            <option value="new">＋ New pallet</option>
+            {openPallets.map((pp) => (
+              <option key={String(pp.id)} value={String(pp.id)}>
+                {String(pp.pallet_no)} ({num(Number(pp.crate_count ?? 0))} crates)
+              </option>
+            ))}
+          </select>
+          <button disabled={sel.size === 0 || busy} onClick={() => void addToPallet()}
+            className="rounded-lg bg-amber-400 px-4 py-2 text-sm font-bold text-amber-950 hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-50">
+            {busy ? "Packing…" : "🧺 Add to Pallet"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
