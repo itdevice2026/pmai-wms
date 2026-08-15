@@ -7,6 +7,11 @@ import {
   Dashboard, WeighingEntry, ScanStation, StorageMap, StockOnHand,
   ActivityLog, Account, ComingSoon,
 } from "./pages";
+import {
+  BasicDressingReport, FpsOutputReport, PalletsReport, WarehouseRecordsReport,
+  StorageRoomsReport, ProductionSummaryReport, IssuanceSummaryReport,
+  DispatchSummaryReport, CrateAuditReport, UnscannedCratesReport, JobOrdersReport,
+} from "./reports";
 
 /**
  * HashRouter is deliberate: GitHub Pages serves static files and has no
@@ -22,6 +27,20 @@ const SCREENS: Record<string, React.ComponentType> = {
   "/reports/stock-on-hand": StockOnHand,
   "/reports/activity-log": ActivityLog,
   "/system/account": Account,
+
+  // Report section — config-driven screens over the db/014 views, which
+  // already exclude locked records.
+  "/reports/basic-dressing": BasicDressingReport,
+  "/reports/fps-output": FpsOutputReport,
+  "/reports/pallets": PalletsReport,
+  "/reports/warehouse-records": WarehouseRecordsReport,
+  "/reports/storage-rooms": StorageRoomsReport,
+  "/reports/production-summary": ProductionSummaryReport,
+  "/reports/issuance-summary": IssuanceSummaryReport,
+  "/reports/dispatch-summary": DispatchSummaryReport,
+  "/reports/crate-audit": CrateAuditReport,
+  "/reports/unscanned-crates": UnscannedCratesReport,
+  "/reports/job-orders": JobOrdersReport,
 };
 
 function Login() {
