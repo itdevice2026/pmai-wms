@@ -1564,20 +1564,26 @@ export function FpsEntry() {
           <Result r={result} />
         </Card>
 
-        <Card title="Today's FPS Records (yours)">
-          <div className="mb-3 flex flex-wrap gap-2">
-            <input className={`${inputClass} !w-36`} placeholder="Search crate #…" value={search} onChange={(e) => setSearch(e.target.value)} />
-            <select className={`${inputClass} !w-36`} value={fCust} onChange={(e) => setFCust(e.target.value)}>
-              <option value="">All customers</option>
-              {[...new Set(recs.map((r) => String((r.customers as Row | null)?.name ?? "")))].filter(Boolean).map((n) => <option key={n}>{n}</option>)}
-            </select>
-            <select className={`${inputClass} !w-28`} value={fSku} onChange={(e) => setFSku(e.target.value)}>
-              <option value="">All SKUs</option>
-              {skus.map((s) => <option key={s}>{s}</option>)}
-            </select>
-            <span className="self-center text-sm text-slate-400">{shown.length}</span>
+        <Card>
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-base font-bold text-slate-900">Today's FPS Records</div>
+              <div className="text-sm text-slate-500">(yours)</div>
+            </div>
+            <div className="flex max-w-[420px] flex-wrap gap-2">
+              <input className={`${inputClass} !w-36`} placeholder="Search crate #…" value={search} onChange={(e) => setSearch(e.target.value)} />
+              <select className={`${inputClass} !w-36`} value={fCust} onChange={(e) => setFCust(e.target.value)}>
+                <option value="">All customers</option>
+                {[...new Set(recs.map((r) => String((r.customers as Row | null)?.name ?? "")))].filter(Boolean).map((n) => <option key={n}>{n}</option>)}
+              </select>
+              <select className={`${inputClass} !w-28`} value={fSku} onChange={(e) => setFSku(e.target.value)}>
+                <option value="">All SKUs</option>
+                {skus.map((s) => <option key={s}>{s}</option>)}
+              </select>
+              <span className="self-center text-sm text-slate-400">{shown.length}</span>
+            </div>
           </div>
-          <DataTable rows={shown} empty="No FPS entries yet today."
+          <DataTable rows={shown} empty="No FPS entries yet today." headerWhenEmpty
             columns={[
               { key: "_n", header: "#", render: (r) => String(shown.indexOf(r) + 1) },
               { key: "crate_no", header: "Crate #", render: (r) => <span className="font-mono text-xs">{String(r.crate_no)}</span> },

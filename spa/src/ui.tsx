@@ -115,12 +115,31 @@ export type Column<T> = {
 };
 
 export function DataTable<T extends Record<string, unknown>>({
-  columns, rows, empty = "No records found.", rowKey,
+  columns, rows, empty = "No records found.", rowKey, headerWhenEmpty = false,
 }: {
   columns: Column<T>[]; rows: T[]; empty?: string; rowKey?: (r: T, i: number) => string;
+  headerWhenEmpty?: boolean;
 }) {
-  if (rows.length === 0)
+  if (rows.length === 0 && !headerWhenEmpty)
     return <div className="px-5 py-12 text-center text-sm text-slate-400">{empty}</div>;
+  if (rows.length === 0)
+    return (
+      <div className="thin-scroll overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50/80">
+              {columns.map((c) => (
+                <th key={c.key}
+                  className={`whitespace-nowrap px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500 ${c.align === "right" ? "text-right" : "text-left"}`}>
+                  {c.header}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        </table>
+        <div className="px-5 py-10 text-center text-sm text-slate-400">{empty}</div>
+      </div>
+    );
   return (
     <div className="thin-scroll overflow-x-auto">
       <table className="min-w-full text-sm">
