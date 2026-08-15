@@ -37,6 +37,11 @@ export type SessionUser = {
   department: string | null;
   plantId: number | null;
   permissions: string[];
+  /**
+   * Live PMAI shows `full access` on IT accounts as a state distinct from any
+   * role, alongside a per-user OVERRIDES count. See System > RBAC.
+   */
+  hasFullAccess: boolean;
 };
 
 export async function hashPassword(plain: string) {
@@ -97,8 +102,10 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     plant_id: number | null;
     role_code: string | null;
     role_name: string | null;
+    has_full_access: boolean;
   }>(
     `SELECT u.id, u.email, u.full_name, u.employee_no, u.department, u.plant_id,
+            u.has_full_access,
             r.code AS role_code, r.name AS role_name
        FROM users u LEFT JOIN roles r ON r.id = u.role_id
       WHERE u.id = $1 AND u.is_active`,
@@ -106,12 +113,30 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   );
   if (!row) return null;
 
+  /**
+   * Effective permissions = role grants UNION per-user grants, MINUS per-user
+   * denies. Live PMAI layers overrides on top of the role — the OVERRIDES
+   * column on /rbac is a count of these rows, and most warehouse operators
+   * carry 11 of them. A deny always beats a grant from either source.
+   */
   const perms = await q<{ code: string }>(
     `SELECT p.code
-       FROM users u
-       JOIN role_permissions rp ON rp.role_id = u.role_id
-       JOIN permissions p ON p.id = rp.permission_id
-      WHERE u.id = $1`,
+       FROM permissions p
+      WHERE p.id IN (
+              SELECT rp.permission_id
+                FROM users u
+                JOIN role_permissions rp ON rp.role_id = u.role_id
+               WHERE u.id = $1
+              UNION
+              SELECT o.permission_id
+                FROM user_permission_overrides o
+               WHERE o.user_id = $1 AND o.effect = 'grant'
+            )
+        AND p.id NOT IN (
+              SELECT o.permission_id
+                FROM user_permission_overrides o
+               WHERE o.user_id = $1 AND o.effect = 'deny'
+            )`,
     [id]
   );
 
@@ -125,6 +150,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
     department: row.department,
     plantId: row.plant_id,
     permissions: perms.map((p) => p.code),
+    hasFullAccess: row.has_full_access,
   };
 }
 
@@ -141,7 +167,10 @@ export async function requireUser(): Promise<SessionUser> {
 
 export function can(user: SessionUser | null, permission: string): boolean {
   if (!user) return false;
-  if (user.roleCode === "admin") return true;
+  // `full access` is the live IT state and outranks everything, including denies.
+  if (user.hasFullAccess) return true;
+  if (user.roleCode === "admin" || user.roleCode === "it") return true;
+  // Denies have already been subtracted when the list was built.
   return user.permissions.includes(permission);
 }
 
