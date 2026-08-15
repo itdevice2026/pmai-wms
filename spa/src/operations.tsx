@@ -1699,3 +1699,118 @@ export function FpsCustomers() {
     </>
   );
 }
+
+/* ============================================================ FPS Scan Station
+ * Keyboard-wedge QR scanner terminal. One input, two behaviours (decided by
+ * the database): a Warehouse/Storage crate is moved to FPS; an FPS Entry
+ * label is marked received in FPS. Matches the live PMAI screen 1:1.
+ */
+export function FpsStation() {
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [lastKey, setLastKey] = useState("—");
+  const [lastCode, setLastCode] = useState("—");
+  const [lastAction, setLastAction] = useState("—");
+  const [log, setLog] = useState<Array<Row & { at: number }>>([]);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      if (document.activeElement?.tagName !== "INPUT") inputRef.current?.focus();
+    }, 1200);
+    return () => clearInterval(t);
+  }, []);
+
+  async function scan(e: React.FormEvent) {
+    e.preventDefault();
+    const value = code.trim();
+    if (!value) return;
+    setBusy(true);
+    const res = await rpc("rpc_fps_scan", { p_code: value });
+    setBusy(false);
+    setLastCode(value);
+    setLastAction(String(res.action ?? (res.ok ? "ok" : "skipped")));
+    setLog((prev) => [{ ...(res as Row), at: Date.now() }, ...prev].slice(0, 300));
+    setCode("");
+    inputRef.current?.focus();
+  }
+
+  const moved = log.filter((l) => Boolean(l.ok)).length;
+  const skipped = log.length - moved;
+
+  return (
+    <>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <a href="#/fps/entry" className="text-sm text-slate-500 hover:text-slate-800">← FPS</a>
+          <span className="text-slate-300">|</span>
+          <h1 className="text-lg font-bold text-slate-900">FPS Scan Station</h1>
+          <span className="rounded-full border border-violet-300 bg-violet-50 px-2.5 py-0.5 text-[10px] font-semibold tracking-wider text-violet-700">MOVE TO FPS</span>
+        </div>
+      </div>
+
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-violet-700">
+          <span className={`h-2.5 w-2.5 rounded-full ${busy ? "bg-amber-400" : "bg-violet-500"}`} />
+          {busy ? "Working…" : "Ready — scan a QR code"}
+        </div>
+        <div className="flex items-center gap-5 text-sm text-slate-600">
+          <span>Total: <strong>{num(log.length)}</strong></span>
+          <span>Moved: <strong className="text-violet-700">{num(moved)}</strong></span>
+          <span>Skipped: <strong className="text-amber-600">{num(skipped)}</strong></span>
+          <button type="button" onClick={() => setLog([])}
+            className="rounded-full border border-slate-300 px-3 py-1 text-xs text-slate-500 hover:bg-slate-50">
+            Clear Log
+          </button>
+        </div>
+      </div>
+
+      <div className="-mx-5 mb-4 flex flex-wrap gap-8 bg-slate-100 px-5 py-1.5 font-mono text-xs text-slate-600 lg:-mx-8 lg:px-8">
+        <span>last key:&nbsp;&nbsp;{lastKey}</span>
+        <span>raw:&nbsp;&nbsp;{code || "—"}</span>
+        <span>code:&nbsp;&nbsp;{lastCode}</span>
+        <span>last action:&nbsp;&nbsp;{lastAction}</span>
+      </div>
+
+      <form onSubmit={scan}>
+        <input ref={inputRef} value={code} autoFocus
+          placeholder="Ready — scan a crate (→ FPS) or an FPS label (→ received)"
+          onChange={(e) => setCode(e.target.value)}
+          onKeyDown={(e) => setLastKey(e.key === "Enter" ? "Enter" : e.key)}
+          className="w-full rounded-xl border-0 px-5 py-4 font-mono text-base ring-2 ring-inset ring-violet-400 placeholder:text-slate-400 focus:ring-violet-500" />
+      </form>
+
+      {log.length === 0 ? (
+        <div className="mt-24 text-center">
+          <div className="mx-auto mb-3 grid h-12 w-12 grid-cols-2 gap-1 opacity-30">
+            <span className="rounded border-2 border-slate-500" /><span className="rounded border-2 border-slate-500" />
+            <span className="rounded border-2 border-slate-500" /><span />
+          </div>
+          <p className="text-lg font-semibold text-slate-500">Ready to scan</p>
+          <p className="mt-1 text-sm text-slate-400">
+            <b className="text-violet-600">Warehouse/Storage</b> crate → moved to FPS · <b className="text-rose-700">FPS label</b> → received in FPS
+          </p>
+        </div>
+      ) : (
+        <div className="thin-scroll mt-5 max-h-[480px] overflow-y-auto rounded-xl border border-slate-200 bg-white">
+          <ul className="divide-y divide-slate-100">
+            {log.map((l, i2) => (
+              <li key={i2} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-sm">
+                    <span className={l.ok ? "text-violet-600" : "text-amber-600"}>{l.ok ? "✓" : "✕"}</span>
+                    <span className="truncate text-slate-700">{String(l.message ?? "")}</span>
+                  </div>
+                  {Boolean(l.crateNo) && <div className="truncate font-mono text-[11px] text-slate-400">{String(l.crateNo)}{l.sku ? ` · ${String(l.sku)}` : ""}</div>}
+                </div>
+                <span className="shrink-0 text-xs tabnum text-slate-400">
+                  {l.weightKg ? `${kg(Number(l.weightKg))} kg` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </>
+  );
+}
