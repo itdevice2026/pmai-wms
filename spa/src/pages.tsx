@@ -138,8 +138,14 @@ type CrateType = { id: number; name: string; tare_kg: string; default_heads: num
 type ClassRow = { id: number; code: string; name: string };
 
 export function WeighingEntry() {
-  const { can } = useSession();
+  const { can, profile } = useSession();
   const today = new Date().toISOString().slice(0, 10);
+  // "Today's records" means transactions WEIGHED today by this operator —
+  // not every crate whose production date is today. Backfilled or imported
+  // records must not appear here.
+  const dayStart = useMemo(() => {
+    const d = new Date(); d.setHours(0, 0, 0, 0); return d.toISOString();
+  }, []);
 
   const { data, error, loading } = useLoad(async () => {
     const [cls, prods, types, settings] = await Promise.all([
@@ -202,11 +208,13 @@ export function WeighingEntry() {
   }, [banded, productId]);
 
   const loadRecords = useCallback(async () => {
-    const { data: rows } = await sb()
+    let q = sb()
       .from("crates")
       .select("id, crate_no, heads, net_weight_kg, weighed_at, products(sku)")
-      .eq("production_date", today).eq("is_voided", false)
+      .gte("weighed_at", dayStart).eq("is_voided", false)
       .order("weighed_at", { ascending: false }).limit(200);
+    if (profile?.id) q = q.eq("weighed_by", profile.id);
+    const { data: rows } = await q;
     setRecords((rows ?? []).map((r) => ({
       id: r.id as number, crate_no: r.crate_no as string,
       sku: (r.products as { sku?: string } | null)?.sku ?? "",
@@ -215,7 +223,7 @@ export function WeighingEntry() {
       weighed_at: r.weighed_at as string,
     })));
     setSelected(new Set());
-  }, [today]);
+  }, [dayStart, profile?.id]);
 
   useEffect(() => { void loadRecords(); }, [loadRecords]);
 
