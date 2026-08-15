@@ -189,7 +189,7 @@ export function WeighingEntry() {
   const [recSku, setRecSku] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
-  type Rec = { id: number; crate_no: string; sku: string; heads: number | null; net_weight_kg: string; weighed_at: string };
+  type Rec = { id: number; crate_no: string; sku: string; heads: number | null; net_weight_kg: string; weighed_at: string; group?: string; ctype?: string; date?: string };
   const [records, setRecords] = useState<Rec[]>([]);
   const weightRef = useRef<HTMLInputElement>(null);
 
@@ -208,10 +208,27 @@ export function WeighingEntry() {
     if (banded.length && !banded.some((p) => p.id === productId)) setProductId(banded[0].id);
   }, [banded, productId]);
 
+  // Live behaviour: the inputted weight automatically selects the SKU band.
+  // Per-head = (weight - tare) / heads, matched against the band ranges of the
+  // selected class. Gap values (e.g. 0.795 between 0.79 and 0.80) resolve to
+  // the band whose decade contains them; exactly 0.80 lands in A08.
+  useEffect(() => {
+    if (!data || !banded.length) return;
+    const ct = data.crateTypes.find((c) => c.id === crateTypeId);
+    const netW = Math.max(0, Number(weight) - Number(ct?.tare_kg ?? 0));
+    const hc = Number(heads) || 0;
+    if (!(netW > 0 && hc > 0)) return;
+    const ph = netW / hc;
+    const match =
+      banded.find((p) => ph >= Number(p.band_min_kg) && ph <= Number(p.band_max_kg)) ??
+      banded.find((p) => ph >= Number(p.band_min_kg) && ph < Number(p.band_min_kg) + 0.1);
+    if (match && match.id !== productId) setProductId(match.id);
+  }, [weight, heads, crateTypeId, banded, data, productId]);
+
   const loadRecords = useCallback(async () => {
     let q = sb()
       .from("crates")
-      .select("id, crate_no, heads, net_weight_kg, weighed_at, products(sku)")
+      .select("id, crate_no, heads, net_weight_kg, weighed_at, production_date, products(sku), crate_types(name)")
       .gte("weighed_at", dayStart).eq("is_voided", false)
       .order("weighed_at", { ascending: false }).limit(200);
     if (profile?.id) q = q.eq("weighed_by", profile.id);
@@ -222,6 +239,10 @@ export function WeighingEntry() {
       heads: r.heads as number | null,
       net_weight_kg: r.net_weight_kg as string,
       weighed_at: r.weighed_at as string,
+      group: /^[ABC]/.test(String((r.products as { sku?: string } | null)?.sku ?? ""))
+        ? `Class ${String((r.products as { sku?: string } | null)?.sku)[0]}` : "",
+      ctype: String((r.crate_types as { name?: string } | null)?.name ?? "").replace(/ crate$/i, ""),
+      date: String(r.production_date ?? ""),
     })));
     setSelected(new Set());
   }, [dayStart, profile?.id]);
@@ -243,37 +264,46 @@ export function WeighingEntry() {
   const outOfBand = perHead > 0 && lo > 0 && hi > 0 && (perHead < lo || perHead > hi);
 
   /** Browser-print labels. Sizes follow the live dropdown (inches). */
-  async function printLabels(list: Array<{ crate_no: string; sku: string; net_weight_kg: string; heads: number | null }>) {
+  /** PMAI label format: QR left, divider, then crate no / SKU / group /
+   *  weight / date / heads. Sizes follow the label-size dropdown (inches). */
+  async function printLabels(list: Array<{
+    crate_no: string; sku: string; group?: string; net_weight_kg: string;
+    heads: number | null; ctype?: string; date?: string;
+  }>) {
     if (!list.length) return;
     const [w, h] = labelSize.split("x").map(Number);
-    // Every weighing generates a QR code — the label carries it so the scan
-    // stations can read the crate straight off the printout.
     const qrs = await Promise.all(list.map((r) =>
-      QRCode.toDataURL(r.crate_no, { margin: 0, width: 220 }).catch(() => "")));
-    const win = window.open("", "_blank", "width=480,height=640");
+      QRCode.toDataURL(r.crate_no, { margin: 0, width: 280 }).catch(() => "")));
+    const win = window.open("", "_blank", "width=520,height=660");
     if (!win) return;
+    const big = w >= 4;
     win.document.write(`<!doctype html><html><head><title>Labels</title><style>
       @page { size: ${w}in ${h}in; margin: 0; }
-      body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; }
-      .label { width: ${w}in; height: ${h}in; padding: 0.15in; box-sizing: border-box;
-               display: flex; flex-direction: column; justify-content: ${fillSpace ? "space-between" : "flex-start"};
+      body { margin: 0; font-family: Arial, ui-sans-serif, sans-serif; color: #000; }
+      .label { width: ${w}in; height: ${h}in; box-sizing: border-box; padding: 0.12in;
+               display: flex; align-items: ${fillSpace ? "stretch" : "flex-start"}; gap: 0.14in;
                page-break-after: always; }
-      .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 0.1in; }
-      .qr { width: ${Math.min(w, h) * 0.42}in; height: ${Math.min(w, h) * 0.42}in; }
-      .crate { font-size: ${w >= 4 ? "20pt" : "14pt"}; font-weight: 700; letter-spacing: 0.5px; }
-      .row { font-size: ${w >= 4 ? "16pt" : "11pt"}; margin-top: 0.06in; }
-      .big { font-size: ${w >= 4 ? "28pt" : "18pt"}; font-weight: 700; }
+      .qr { width: ${Math.min(w * 0.38, h * 0.62)}in; height: ${Math.min(w * 0.38, h * 0.62)}in; margin-top: 0.08in; }
+      .divider { width: 2.5px; background: #000; align-self: stretch; }
+      .details { flex: 1; min-width: 0; }
+      .crate { font-size: ${big ? "15pt" : "10pt"}; font-weight: 800; letter-spacing: 0.3px; }
+      .lbl { font-size: ${big ? "8pt" : "6pt"}; font-weight: 700; letter-spacing: 1px; }
+      .skuwrap { border-left: 3.5px solid #000; padding-left: 0.07in; margin-top: 0.07in; }
+      .sku { font-size: ${big ? "20pt" : "13pt"}; font-weight: 800; line-height: 1.05; }
+      .row { margin-top: 0.05in; font-size: ${big ? "11pt" : "8pt"}; }
+      .row b.hero { font-size: ${big ? "18pt" : "12pt"}; }
     </style></head><body>` +
-      list.map((r, i) => `<div class="label">
-        <div class="top">
-          <div>
-            <div class="crate">${r.crate_no}</div>
-            <div class="row">SKU <b>${r.sku}</b> · Heads <b>${r.heads ?? ""}</b></div>
-            <div class="big">${Number(r.net_weight_kg).toFixed(2)} kg</div>
-          </div>
-          ${qrs[i] ? `<img class="qr" src="${qrs[i]}" alt="QR ${r.crate_no}" />` : ""}
+      list.map((r, i2) => `<div class="label">
+        ${qrs[i2] ? `<img class="qr" src="${qrs[i2]}" alt="QR" />` : ""}
+        <div class="divider"></div>
+        <div class="details">
+          <div class="crate">${r.crate_no}</div>
+          <div class="skuwrap"><div class="lbl">SKU</div><div class="sku">${r.sku}</div></div>
+          <div class="row"><span class="lbl">GROUP</span> <b>${r.group ?? ""}</b></div>
+          <div class="row"><span class="lbl">WEIGHT</span> <b class="hero">${Number(r.net_weight_kg).toFixed(2)} kg</b></div>
+          <div class="row"><span class="lbl">DATE</span> <b>${r.date ?? new Date().toISOString().slice(0, 10)}</b></div>
+          <div class="row"><span class="lbl">HEADS</span> <b>${r.heads ?? ""}${r.ctype ? ` (${r.ctype})` : ""}</b></div>
         </div>
-        <div class="row">${new Date().toLocaleString("en-PH")}</div>
       </div>`).join("") + "</body></html>");
     win.document.close();
     win.focus();
@@ -295,8 +325,15 @@ export function WeighingEntry() {
     setMsg({ ok: res.ok, text: res.ok ? `Saved ${res.crateNo} · ${kg(res.netKg as number)} kg` : res.message });
     if (res.ok) {
       if (autoPrint && res.crateNo) {
-        void printLabels([{ crate_no: String(res.crateNo), sku: selectedProduct?.band_code ?? "",
-          net_weight_kg: String(res.netKg ?? net), heads: headCount }]);
+        void printLabels([{
+          crate_no: String(res.crateNo),
+          sku: selectedProduct?.band_code ?? "",
+          group: data?.classes.find((c) => c.id === classId)?.name ?? "",
+          net_weight_kg: String(res.netKg ?? net),
+          heads: headCount,
+          ctype: crateType?.name?.replace(/ crate$/i, ""),
+          date: prodDate,
+        }]);
       }
       setWeight(""); weightRef.current?.focus(); void loadRecords();
     }
@@ -497,11 +534,29 @@ export function WeighingEntry() {
                     })} />
                 ),
               },
-              { key: "crate_no", header: "Crate", render: (r) => <span className="font-mono text-xs">{String(r.crate_no)}</span> },
-              { key: "sku", header: "SKU" },
+              { key: "_n", header: "#", render: (r) => String(shown.indexOf(r as unknown as Rec) + 1) },
+              { key: "weighed_at", header: "Time", render: (r) => new Date(String(r.weighed_at)).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }) },
+              { key: "crate_no", header: "Batch", render: (r) => <span className="font-mono text-xs">{String(r.crate_no).replace(/-P\d+$/, "")}</span> },
+              { key: "sku", header: "SKU", render: (r) => <span className="font-semibold text-emerald-700">{String(r.sku)}</span> },
+              { key: "net_weight_kg", header: "Weight", align: "right", render: (r) => kg(r.net_weight_kg as string, 3) },
               { key: "heads", header: "Heads", align: "right" },
-              { key: "net_weight_kg", header: "Net kg", align: "right", render: (r) => kg(r.net_weight_kg as string) },
-              { key: "weighed_at", header: "Time", align: "right", render: (r) => new Date(String(r.weighed_at)).toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" }) },
+              {
+                key: "_act", header: "", render: (r) => (
+                  <span className="flex items-center gap-2">
+                    <button type="button" title="Re-print label" className="hover:opacity-70"
+                      onClick={() => void printLabels([r as unknown as Rec])}>🖨</button>
+                    <button type="button" title="Delete record" disabled={!can("bd.weighing.delete")}
+                      className="text-slate-400 hover:text-rose-600 disabled:opacity-30"
+                      onClick={() => {
+                        void (async () => {
+                          const res2 = await rpc<RpcResult>("rpc_delete_weighing", { p_crate_id: Number(r.id) });
+                          setMsg({ ok: res2.ok, text: res2.ok ? `Deleted ${String(r.crate_no)}` : res2.message });
+                          void loadRecords();
+                        })();
+                      }}>✕</button>
+                  </span>
+                ),
+              },
             ] as Column<Record<string, unknown>>[]}
           />
         </div>
