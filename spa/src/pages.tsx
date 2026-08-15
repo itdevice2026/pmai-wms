@@ -580,7 +580,15 @@ export function ScanStation() {
   const [code, setCode] = useState("");
   const [log, setLog] = useState<Array<RpcResult & { at: number }>>([]);
   const [busy, setBusy] = useState(false);
+  const [palletId, setPalletId] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const { data: pallets, reload: reloadPallets } = useLoad(async () => {
+    const { data: rows2 } = await sb().from("pallets")
+      .select("id,pallet_no,crate_count").eq("status", "open")
+      .order("id", { ascending: false }).limit(25);
+    return rows2 ?? [];
+  }, []);
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -594,96 +602,119 @@ export function ScanStation() {
     const value = code.trim();
     if (!value) return;
     setBusy(true);
-    const res = await rpc<RpcResult>("rpc_move_crate", {
+    let res = await rpc<RpcResult>("rpc_move_crate", {
       p_crate_no: value,
       p_to_status: "warehouse",
       p_permission: "bd.scan.use",
       p_expect_from: ["production"],
       p_module: "Basic Dressing",
     });
+    // Packing onto a pallet after receiving, when a target pallet is chosen.
+    if (res.ok && palletId) {
+      const packed = await rpc<RpcResult>("rpc_add_crate_to_pallet", {
+        p_crate_no: value, p_pallet_id: Number(palletId),
+      });
+      res = packed.ok
+        ? { ...res, message: `${res.message} → packed onto pallet` }
+        : { ...res, message: `Received, but not packed: ${packed.message}` };
+      void reloadPallets();
+    }
     setBusy(false);
-    setLog((prev) => [{ ...res, at: Date.now() }, ...prev].slice(0, 200));
+    setLog((prev) => [{ ...res, at: Date.now() }, ...prev].slice(0, 300));
     setCode("");
     inputRef.current?.focus();
   }
 
-  const ok = log.filter((l) => l.ok).length;
-  const bad = log.length - ok;
-  const wt = log.filter((l) => l.ok).reduce((s, l) => s + Number(l.weightKg ?? 0), 0);
-  const last = log[0];
+  async function newPallet() {
+    const r = await rpc<RpcResult>("rpc_open_pallet", { p_kind: "bd" });
+    if (r.ok) {
+      await reloadPallets();
+      const id = Number((r as Record<string, unknown>).palletId ?? (r as Record<string, unknown>).pallet_id ?? 0);
+      if (id) setPalletId(String(id));
+    }
+    setLog((prev) => [{ ...r, at: Date.now() }, ...prev].slice(0, 300));
+  }
+
+  const accepted = log.filter((l) => l.ok).length;
+  const skipped = log.length - accepted;
 
   return (
     <>
-      <PageHeader title="BD Scan Station"
-        subtitle="Scan crates off the dressing line to receive them into the warehouse." />
-      <div className="grid gap-6 xl:grid-cols-2">
-        <form onSubmit={scan} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold text-slate-900">Receive into warehouse</h2>
-          <p className="mt-1 text-sm text-slate-500">
-            The lifecycle is enforced in the database, so an out-of-order scan is refused.
-          </p>
-          <div className="mt-5">
-            <label className="mb-1.5 block text-sm font-semibold text-slate-700">Scan crate barcode</label>
-            <input ref={inputRef} value={code} autoFocus placeholder="PMAI-20260813-0001-P1"
-              onChange={(e) => setCode(e.target.value)}
-              className="w-full rounded-lg border-0 px-4 py-4 text-center font-mono text-lg tracking-wider ring-2 ring-inset ring-slate-300 focus:ring-brand-500" />
-          </div>
-          <button type="submit" disabled={busy || !code.trim()}
-            className="mt-4 w-full rounded-lg bg-brand-600 px-4 py-3 text-base font-semibold text-white shadow-sm hover:bg-brand-700 disabled:opacity-50">
-            {busy ? "Working…" : "Receive crate"}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-medium text-emerald-700">
+          <span className={`h-2.5 w-2.5 rounded-full ${busy ? "bg-amber-400" : "bg-emerald-500"}`} />
+          {busy ? "Working…" : "Ready — scan a QR code"}
+        </div>
+        <div className="flex items-center gap-5 text-sm text-slate-600">
+          <span>Total: <strong>{num(log.length)}</strong></span>
+          <span>Accepted: <strong className="text-emerald-700">{num(accepted)}</strong></span>
+          <span>Skipped: <strong className="text-rose-600">{num(skipped)}</strong></span>
+          <button type="button" onClick={() => setLog([])}
+            className="rounded-full border border-slate-300 px-3 py-1 text-xs text-slate-500 hover:bg-slate-50">
+            Clear Log
           </button>
-
-          {last && (
-            <div className={`mt-5 rounded-xl px-5 py-4 ring-1 ring-inset ${last.ok ? "bg-emerald-50 text-emerald-900 ring-emerald-200" : "bg-rose-50 text-rose-900 ring-rose-200"}`}>
-              <div className="flex items-center gap-2 text-base font-semibold">
-                <span>{last.ok ? "✓" : "✕"}</span><span>{last.message}</span>
-              </div>
-              {last.crateNo && (
-                <div className="mt-1 font-mono text-xs opacity-70">
-                  {last.crateNo}{last.sku ? ` · ${last.sku}` : ""}{last.weightKg ? ` · ${kg(last.weightKg)} kg` : ""}
-                </div>
-              )}
-            </div>
-          )}
-        </form>
-
-        <Card title="This session">
-          <div className="mb-4 grid grid-cols-3 gap-3">
-            <div className="rounded-lg bg-emerald-50 px-3 py-2.5 text-center">
-              <div className="text-2xl font-semibold tabnum text-emerald-700">{num(ok)}</div>
-              <div className="text-[11px] uppercase tracking-wide text-emerald-600">Accepted</div>
-            </div>
-            <div className="rounded-lg bg-rose-50 px-3 py-2.5 text-center">
-              <div className="text-2xl font-semibold tabnum text-rose-700">{num(bad)}</div>
-              <div className="text-[11px] uppercase tracking-wide text-rose-600">Rejected</div>
-            </div>
-            <div className="rounded-lg bg-slate-100 px-3 py-2.5 text-center">
-              <div className="text-2xl font-semibold tabnum text-slate-700">{kg(wt)}</div>
-              <div className="text-[11px] uppercase tracking-wide text-slate-500">kg scanned</div>
-            </div>
-          </div>
-          <div className="thin-scroll max-h-[420px] overflow-y-auto rounded-lg border border-slate-200">
-            {log.length === 0 ? (
-              <p className="px-4 py-16 text-center text-sm text-slate-400">Nothing scanned yet.</p>
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {log.map((l, i) => (
-                  <li key={i} className="flex items-center justify-between gap-3 px-4 py-2.5">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 text-sm">
-                        <span className={l.ok ? "text-emerald-600" : "text-rose-600"}>{l.ok ? "✓" : "✕"}</span>
-                        <span className="truncate text-slate-700">{l.message}</span>
-                      </div>
-                      {l.crateNo && <div className="truncate font-mono text-[11px] text-slate-400">{l.crateNo}</div>}
-                    </div>
-                    <span className="shrink-0 text-xs tabnum text-slate-400">{l.weightKg ? `${kg(l.weightKg)} kg` : ""}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </Card>
+        </div>
       </div>
+
+      <div className="mb-4 flex flex-wrap items-center gap-3 text-sm">
+        <span className="flex items-center gap-1.5 text-slate-600">📦 Add to pallet:</span>
+        <select className={`${inputClass} !w-64`} value={palletId} onChange={(e) => setPalletId(e.target.value)}>
+          <option value="">— No pallet (just receive) —</option>
+          {(pallets ?? []).map((p) => (
+            <option key={String((p as Record<string, unknown>).id)} value={String((p as Record<string, unknown>).id)}>
+              Pallet {String((p as Record<string, unknown>).pallet_no)} ({num(Number((p as Record<string, unknown>).crate_count ?? 0))})
+            </option>
+          ))}
+        </select>
+        <button type="button" onClick={() => void newPallet()}
+          className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50">
+          + New pallet
+        </button>
+        <span className="text-xs text-slate-400">
+          {palletId
+            ? "Each accepted crate is packed onto the selected pallet (cap 24 — a reason is required beyond that)."
+            : "Crates will be received only — not packed onto a pallet."}
+        </span>
+      </div>
+
+      <form onSubmit={scan}>
+        <input ref={inputRef} value={code} autoFocus
+          placeholder="Ready — scan a crate QR code"
+          onChange={(e) => setCode(e.target.value)}
+          className="w-full rounded-xl border-0 px-5 py-4 font-mono text-base ring-2 ring-inset ring-emerald-400 placeholder:text-slate-400 focus:ring-emerald-500" />
+      </form>
+
+      {log.length === 0 ? (
+        <div className="mt-16 text-center">
+          <div className="mx-auto mb-3 grid h-12 w-12 grid-cols-2 gap-1 opacity-30">
+            <span className="border-2 border-slate-500" /><span className="border-2 border-slate-500" />
+            <span className="border-2 border-slate-500" /><span />
+          </div>
+          <p className="text-base font-semibold text-slate-600">Ready to scan</p>
+          <p className="mt-1 text-sm text-slate-400">
+            Each crate is accepted automatically — already-received crates will be flagged
+          </p>
+        </div>
+      ) : (
+        <div className="thin-scroll mt-5 max-h-[480px] overflow-y-auto rounded-xl border border-slate-200 bg-white">
+          <ul className="divide-y divide-slate-100">
+            {log.map((l, i2) => (
+              <li key={i2} className="flex items-center justify-between gap-3 px-4 py-2.5">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5 text-sm">
+                    <span className={l.ok ? "text-emerald-600" : "text-rose-600"}>{l.ok ? "✓" : "✕"}</span>
+                    <span className="truncate text-slate-700">{l.message}</span>
+                  </div>
+                  {l.crateNo && <div className="truncate font-mono text-[11px] text-slate-400">{l.crateNo}{l.sku ? ` · ${l.sku}` : ""}</div>}
+                </div>
+                <span className="shrink-0 text-xs tabnum text-slate-400">
+                  {l.weightKg ? `${kg(l.weightKg)} kg` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </>
   );
 }
