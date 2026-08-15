@@ -142,17 +142,23 @@ export function WeighingEntry() {
   const today = new Date().toISOString().slice(0, 10);
 
   const { data, error, loading } = useLoad(async () => {
-    const [cls, prods, types] = await Promise.all([
+    const [cls, prods, types, settings] = await Promise.all([
       sb().from("product_classes").select("id, code, name").eq("is_active", true).order("sort_order"),
       sb().from("products").select("id, sku, band_code, band_min_kg, band_max_kg, class_id")
         .not("band_code", "is", null).eq("is_active", true).order("sort_order"),
       sb().from("crate_types").select("id, name, tare_kg, default_heads").eq("is_active", true).order("sort_order"),
+      sb().from("app_settings").select("key, value").eq("scope", "global")
+        .in("key", ["weighing.operators_can_edit_date", "weighing.future_days"]),
     ]);
     if (prods.error) throw new Error(prods.error.message);
+    const setting = (k: string) =>
+      (settings.data ?? []).find((s) => (s as { key?: string }).key === k) as { value?: unknown } | undefined;
     return {
       classes: (cls.data ?? []) as ClassRow[],
       products: (prods.data ?? []) as BandProduct[],
       crateTypes: (types.data ?? []) as CrateType[],
+      dateEditable: Boolean(setting("weighing.operators_can_edit_date")?.value ?? false),
+      futureDays: Number(setting("weighing.future_days")?.value ?? 1),
     };
   }, []);
 
@@ -164,13 +170,27 @@ export function WeighingEntry() {
   const [prodDate, setProdDate] = useState(today);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
-  const [records, setRecords] = useState<Array<{ id: number; crate_no: string; sku: string; heads: number | null; net_weight_kg: string; weighed_at: string }>>([]);
+  const [dateEditable, setDateEditable] = useState<boolean | null>(null);
+
+  // Print controls from the live screen: label size, fill space, auto-print.
+  const [labelSize, setLabelSize] = useState("5x3");
+  const [fillSpace, setFillSpace] = useState(false);
+  const [autoPrint, setAutoPrint] = useState(true);
+
+  // Today's records panel: search / SKU filter / multi-select delete.
+  const [recSearch, setRecSearch] = useState("");
+  const [recSku, setRecSku] = useState("");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+
+  type Rec = { id: number; crate_no: string; sku: string; heads: number | null; net_weight_kg: string; weighed_at: string };
+  const [records, setRecords] = useState<Rec[]>([]);
   const weightRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!data) return;
     setClassId((c) => c ?? data.classes[0]?.id ?? null);
     setCrateTypeId((c) => c ?? data.crateTypes[0]?.id ?? null);
+    setDateEditable((v) => v ?? data.dateEditable);
   }, [data]);
 
   const banded = useMemo(
@@ -194,6 +214,7 @@ export function WeighingEntry() {
       net_weight_kg: r.net_weight_kg as string,
       weighed_at: r.weighed_at as string,
     })));
+    setSelected(new Set());
   }, [today]);
 
   useEffect(() => { void loadRecords(); }, [loadRecords]);
@@ -202,15 +223,42 @@ export function WeighingEntry() {
   if (error) return <ErrorBox message={error} />;
   if (!data) return null;
 
-  const selected = banded.find((p) => p.id === productId);
+  const selectedProduct = banded.find((p) => p.id === productId);
   const crateType = data.crateTypes.find((c) => c.id === crateTypeId);
   const tare = Number(crateType?.tare_kg ?? 0);
   const net = weight ? Math.max(0, Number(weight) - tare) : 0;
   const headCount = Number(heads) || 0;
   const perHead = headCount > 0 && net > 0 ? net / headCount : 0;
-  const lo = Number(selected?.band_min_kg ?? 0);
-  const hi = Number(selected?.band_max_kg ?? 0);
+  const lo = Number(selectedProduct?.band_min_kg ?? 0);
+  const hi = Number(selectedProduct?.band_max_kg ?? 0);
   const outOfBand = perHead > 0 && lo > 0 && hi > 0 && (perHead < lo || perHead > hi);
+
+  /** Browser-print labels. Sizes follow the live dropdown (inches). */
+  function printLabels(list: Array<{ crate_no: string; sku: string; net_weight_kg: string; heads: number | null }>) {
+    if (!list.length) return;
+    const [w, h] = labelSize.split("x").map(Number);
+    const win = window.open("", "_blank", "width=480,height=640");
+    if (!win) return;
+    win.document.write(`<!doctype html><html><head><title>Labels</title><style>
+      @page { size: ${w}in ${h}in; margin: 0; }
+      body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; }
+      .label { width: ${w}in; height: ${h}in; padding: 0.15in; box-sizing: border-box;
+               display: flex; flex-direction: column; justify-content: ${fillSpace ? "space-between" : "flex-start"};
+               page-break-after: always; }
+      .crate { font-size: ${w >= 4 ? "20pt" : "14pt"}; font-weight: 700; letter-spacing: 0.5px; }
+      .row { font-size: ${w >= 4 ? "16pt" : "11pt"}; margin-top: 0.06in; }
+      .big { font-size: ${w >= 4 ? "28pt" : "18pt"}; font-weight: 700; }
+    </style></head><body>` +
+      list.map((r) => `<div class="label">
+        <div class="crate">${r.crate_no}</div>
+        <div class="row">SKU <b>${r.sku}</b> · Heads <b>${r.heads ?? ""}</b></div>
+        <div class="big">${Number(r.net_weight_kg).toFixed(2)} kg</div>
+        <div class="row">${new Date().toLocaleString("en-PH")}</div>
+      </div>`).join("") + "</body></html>");
+    win.document.close();
+    win.focus();
+    win.print();
+  }
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -225,29 +273,98 @@ export function WeighingEntry() {
     });
     setSaving(false);
     setMsg({ ok: res.ok, text: res.ok ? `Saved ${res.crateNo} · ${kg(res.netKg as number)} kg` : res.message });
-    if (res.ok) { setWeight(""); weightRef.current?.focus(); void loadRecords(); }
+    if (res.ok) {
+      if (autoPrint && res.crateNo) {
+        printLabels([{ crate_no: String(res.crateNo), sku: selectedProduct?.band_code ?? "",
+          net_weight_kg: String(res.netKg ?? net), heads: headCount }]);
+      }
+      setWeight(""); weightRef.current?.focus(); void loadRecords();
+    }
   }
 
+  async function toggleUnlock() {
+    const next = !dateEditable;
+    const r = await rpc<RpcResult>("rpc_set_weighing_date_unlock", { p_unlocked: next });
+    setMsg({ ok: Boolean(r.ok), text: String(r.message ?? "") });
+    if (r.ok) setDateEditable(next);
+  }
+
+  async function deleteSelected() {
+    if (!selected.size) return;
+    let okCount = 0; let firstErr = "";
+    for (const id of selected) {
+      const r = await rpc<RpcResult>("rpc_delete_weighing", { p_crate_id: id });
+      if (r.ok) okCount += 1; else if (!firstErr) firstErr = r.message;
+    }
+    setMsg({ ok: okCount > 0, text: firstErr && okCount === 0 ? firstErr : `Deleted ${okCount} record(s).` });
+    void loadRecords();
+  }
+
+  const shown = records.filter((r) =>
+    (!recSku || r.sku === recSku) &&
+    (!recSearch.trim() || r.crate_no.toLowerCase().includes(recSearch.trim().toLowerCase())));
+  const skus = [...new Set(records.map((r) => r.sku))].sort();
   const totalWeight = records.reduce((a, r) => a + Number(r.net_weight_kg), 0);
+  const allShownSelected = shown.length > 0 && shown.every((r) => selected.has(r.id));
+
+  const toggleStyles = (on: boolean) =>
+    `relative inline-flex h-5 w-9 cursor-pointer items-center rounded-full transition ${on ? "bg-emerald-500" : "bg-slate-300"}`;
 
   return (
     <div className="grid gap-6 xl:grid-cols-2">
       <form onSubmit={save} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="mb-5 flex items-center gap-2">
+        <div className="mb-3 flex items-center gap-2">
           <span className="text-xl">🐔</span>
           <h2 className="text-lg font-semibold text-slate-900">Weighing Entry</h2>
+        </div>
+
+        <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+          <label className="flex items-center gap-2 text-slate-600">
+            Label size
+            <select className={`${inputClass} !w-28 !py-1`} value={labelSize} onChange={(e) => setLabelSize(e.target.value)}>
+              <option value="5x3">5 × 3 in</option><option value="4x3">4 × 3 in</option>
+              <option value="4x2">4 × 2 in</option><option value="3x2">3 × 2 in</option>
+              <option value="2x2">2 × 2 in</option><option value="4x6">4 × 6 in</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-slate-600">
+            Fill space
+            <button type="button" className={toggleStyles(fillSpace)} onClick={() => setFillSpace((v) => !v)}>
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${fillSpace ? "translate-x-4" : "translate-x-0.5"}`} />
+            </button>
+          </label>
+          <label className="flex items-center gap-2 text-slate-600">
+            Auto-print
+            <button type="button" className={toggleStyles(autoPrint)} onClick={() => setAutoPrint((v) => !v)}>
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition ${autoPrint ? "translate-x-4" : "translate-x-0.5"}`} />
+            </button>
+          </label>
         </div>
 
         <div className="mb-6 rounded-lg bg-slate-100 px-6 py-8 text-center">
           <div className="text-[11px] font-semibold uppercase tracking-widest text-slate-500">Live weight from scale</div>
           <div className="mt-2 text-5xl font-bold tabnum text-slate-800">-- <span className="text-3xl">kg</span></div>
-          <div className="mt-1 text-xs text-slate-400">Manual entry — no scale configured</div>
+          <div className="mt-1 text-xs text-slate-400">Waiting for scale…</div>
         </div>
 
         <div className="mb-5 grid gap-4 sm:grid-cols-3">
-          <Field label="Production Date">
-            <input type="date" className={inputClass} value={prodDate} onChange={(e) => setProdDate(e.target.value)} />
-          </Field>
+          <div>
+            <Field label="Production Date">
+              <input type="date" className={inputClass} value={prodDate} onChange={(e) => setProdDate(e.target.value)} />
+            </Field>
+            <div className="mt-1.5 flex flex-wrap items-center gap-2">
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${dateEditable ? "bg-sky-100 text-sky-700" : "bg-slate-200 text-slate-600"}`}>
+                {dateEditable ? "🔓 Editable" : "🔒 Locked to today"}
+              </span>
+              <span className="text-[11px] text-slate-400">can set up to {data.futureDays === 1 ? "tomorrow" : `${data.futureDays} days ahead`}</span>
+            </div>
+            {can("bd.weighing.unlock_date") && (
+              <button type="button" onClick={() => void toggleUnlock()}
+                className="mt-1.5 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
+                {dateEditable ? "Lock operators" : "Unlock operators"}
+              </button>
+            )}
+          </div>
           <Field label="Class / Band">
             <select className={inputClass} value={classId ?? ""} onChange={(e) => setClassId(Number(e.target.value))}>
               {data.classes.map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
@@ -314,13 +431,52 @@ export function WeighingEntry() {
         </button>
       </form>
 
-      <Card title={`Today's records — ${num(records.length)} · ${kg(totalWeight, 3)} kg`} padded={false}>
-        <div className="thin-scroll max-h-[560px] overflow-y-auto">
+      <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-200 px-5 py-4">
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold text-slate-900">Today's records</h2>
+            <span className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-600">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" /> Live
+            </span>
+          </div>
+          <p className="mt-0.5 text-xs text-slate-500">{num(records.length)} record(s) · {kg(totalWeight, 3)} kg total</p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <input className={`${inputClass} !w-44`} placeholder="🔍 Search / scan crate…" value={recSearch}
+              onChange={(e) => setRecSearch(e.target.value)} />
+            <select className={`${inputClass} !w-32`} value={recSku} onChange={(e) => setRecSku(e.target.value)}>
+              <option value="">All SKUs</option>
+              {skus.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <button type="button" disabled={shown.length === 0}
+              onClick={() => printLabels(shown)}
+              className="rounded-lg bg-emerald-100 px-3 py-2 text-sm font-medium text-emerald-800 hover:bg-emerald-200 disabled:opacity-50">
+              🖨 Print All
+            </button>
+            <button type="button" disabled={selected.size === 0 || !can("bd.weighing.delete")}
+              onClick={() => void deleteSelected()}
+              className="rounded-lg bg-rose-100 px-3 py-2 text-sm font-medium text-rose-700 hover:bg-rose-200 disabled:opacity-50">
+              🗑 Delete ({selected.size})
+            </button>
+          </div>
+        </div>
+        <div className="thin-scroll max-h-[520px] overflow-y-auto">
           <DataTable
-            rows={records as unknown as Array<Record<string, unknown>>}
+            rows={shown as unknown as Array<Record<string, unknown>>}
             rowKey={(r) => String(r.id)}
             empty="No records yet today — save a weight to start logging."
             columns={[
+              {
+                key: "_sel",
+                header: "",
+                render: (r) => (
+                  <input type="checkbox" checked={selected.has(Number(r.id))}
+                    onChange={(e) => setSelected((prev) => {
+                      const next = new Set(prev);
+                      if (e.target.checked) next.add(Number(r.id)); else next.delete(Number(r.id));
+                      return next;
+                    })} />
+                ),
+              },
               { key: "crate_no", header: "Crate", render: (r) => <span className="font-mono text-xs">{String(r.crate_no)}</span> },
               { key: "sku", header: "SKU" },
               { key: "heads", header: "Heads", align: "right" },
@@ -329,7 +485,16 @@ export function WeighingEntry() {
             ] as Column<Record<string, unknown>>[]}
           />
         </div>
-      </Card>
+        {shown.length > 0 && (
+          <div className="border-t border-slate-200 px-5 py-2">
+            <label className="flex items-center gap-2 text-xs text-slate-500">
+              <input type="checkbox" checked={allShownSelected}
+                onChange={(e) => setSelected(e.target.checked ? new Set(shown.map((r) => r.id)) : new Set())} />
+              Select all shown
+            </label>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
